@@ -135,6 +135,12 @@ internal StringNode *str_list_push(Arena *a, StringList *list, String str) {
   return node;
 }
 
+internal StringNode *str_list_push_cstr(Arena *a, StringList *list,
+                                        char *cstr) {
+  String str = str_init(cstr, strlen(cstr));
+  return str_list_push(a, list, str);
+}
+
 internal StringList str_split(Arena *a, String string, String split_chars) {
   StringList list = {0};
   uint8_t *ptr = string.str;
@@ -210,6 +216,34 @@ internal void echo(StringList *cmd) {
   }
 }
 
+internal bool is_builtin(String cmd, StringList *builtin_cmds) {
+  bool result = false;
+  StringNode *ptr = builtin_cmds->first;
+  for (; ptr != NULL; ptr = ptr->next) {
+    if (str_equal(cmd, ptr->string)) {
+      result = true;
+      break;
+    }
+  }
+  return result;
+}
+
+internal void type(StringList *cmd, StringList *builtin_cmds) {
+  assert(cmd != NULL);
+  assert(cmd->node_count == 2);
+  assert(cmd->first != NULL);
+  assert(cmd->last != NULL);
+
+  String exe = cmd->last->string;
+  if (is_builtin(exe, builtin_cmds)) {
+    str_print(exe);
+    printf(" is a shell builtin\n");
+  } else {
+    str_print(exe);
+    printf(": not found\n");
+  }
+}
+
 int main(int argc, char *argv[]) {
   // Flush after every printf
   setbuf(stdout, NULL);
@@ -217,6 +251,11 @@ int main(int argc, char *argv[]) {
   uint8_t *arena_backing_buffer = (uint8_t *)malloc(4 * MB);
   Arena arena = {0};
   arena_init(&arena, arena_backing_buffer, 4 * MB);
+
+  StringList builtin_cmds = {0};
+  str_list_push_cstr(&arena, &builtin_cmds, "type");
+  str_list_push_cstr(&arena, &builtin_cmds, "echo");
+  str_list_push_cstr(&arena, &builtin_cmds, "exit");
 
   while (true) {
     printf("$ ");
@@ -231,6 +270,8 @@ int main(int argc, char *argv[]) {
       break;
     } else if (str_equal_cstr(list.first->string, "echo")) {
       echo(&list);
+    } else if (str_equal_cstr(list.first->string, "type")) {
+      type(&list, &builtin_cmds);
     } else {
       printf("%s: command not found\n", cmd);
     }
