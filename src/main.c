@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -426,6 +427,34 @@ internal void pwd(Arena *a, StringList *full_cmd) {
   temp_arena_memory_end(temp);
 }
 
+internal bool is_directory(const char *path) {
+  struct stat st;
+  if (stat(path, &st) == 0) {
+    return S_ISDIR(st.st_mode);
+  }
+  return false;
+}
+
+internal void cd(Arena *a, StringList *full_cmd) {
+  assert(full_cmd != NULL);
+  assert(full_cmd->node_count == 2);
+  assert(full_cmd->first != NULL);
+  assert(full_cmd->last != NULL);
+
+  TempArenaMemory temp = temp_arena_memory_begin(a);
+  String dir = full_cmd->last->string;
+  char *buf = (char *)arena_alloc(a, PATH_MAX_LEN);
+  memcpy(buf, dir.str, dir.size);
+  buf[dir.size] = '\0';
+
+  if (is_directory(buf)) {
+    chdir(buf);
+  } else {
+    printf("cd: %s: No such file or directory\n", buf);
+  }
+  temp_arena_memory_end(temp);
+}
+
 int main(int argc, char *argv[]) {
   // Flush after every printf
   setbuf(stdout, NULL);
@@ -439,6 +468,7 @@ int main(int argc, char *argv[]) {
   str_list_push_cstr(&arena, &builtin_cmds, "echo");
   str_list_push_cstr(&arena, &builtin_cmds, "exit");
   str_list_push_cstr(&arena, &builtin_cmds, "pwd");
+  str_list_push_cstr(&arena, &builtin_cmds, "cd");
 
   char *env_path = getenv("PATH");
   StringList env_path_list = str_split_cstr(&arena, env_path, ":");
@@ -463,6 +493,8 @@ int main(int argc, char *argv[]) {
       pwd(&arena, &list);
     } else if (str_equal_cstr(list.first->string, "type")) {
       type(&arena, &list, &builtin_cmds, &env_path_list);
+    } else if (str_equal_cstr(list.first->string, "cd")) {
+      cd(&arena, &list);
     } else {
       run(&arena, &list, &builtin_cmds, &env_path_list);
     }
