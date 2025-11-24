@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #define global static
@@ -229,10 +231,8 @@ internal StringList str_split_cstr(Arena *a, char *cstr, char *split_chars) {
 }
 
 internal void str_print(String str) {
-  if (str.str != NULL) {
-    for (int i = 0; i < str.size; i += 1) {
-      putchar(str.str[i]);
-    }
+  if (str.size > 0) {
+    printf("%.*s", (int)str.size, str.str);
   }
 }
 
@@ -322,14 +322,94 @@ internal void type(Arena *a, StringList *full_cmd, StringList *builtin_cmds,
   } else {
     String exe_path = search_path(a, exe, env_path_list);
     if (exe_path.size > 0) {
-      str_print(exe);
-      printf(" is ");
-      str_print(exe_path);
-      printf("\n");
+      printf("%.*s is %.*s\n", (int)exe.size, exe.str, (int)exe_path.size,
+             exe_path.str);
     } else {
-      str_print(exe);
-      printf(": not found\n");
+      printf("%.*s not found\n", (int)exe.size, exe.str);
     }
+  }
+}
+
+internal void run_exec(Arena *a, StringList *full_cmd, String exe) {
+  TempArenaMemory temp = temp_arena_memory_begin(a);
+
+  char **args =
+      (char **)arena_alloc(a, sizeof(char *) * (full_cmd->node_count + 1));
+  StringNode *ptr = full_cmd->first;
+  for (int index = 0; ptr != NULL; ptr = ptr->next, index += 1) {
+    char *buf = (char *)arena_alloc(a, ptr->string.size + 1);
+    memcpy(buf, ptr->string.str, ptr->string.size);
+    buf[ptr->string.size] = '\0';
+    args[index] = buf;
+  }
+  args[full_cmd->node_count] = NULL;
+
+  int pipe_stdout[2];
+  int pipe_stderr[2];
+  pipe(pipe_stdout);
+  pipe(pipe_stderr);
+
+  pid_t pid = fork();
+
+  // child process
+  if (pid == 0) {
+
+    // close read end
+    close(pipe_stdout[0]);
+    close(pipe_stderr[0]);
+    // redirect
+    dup2(pipe_stdout[1], STDOUT_FILENO);
+    dup2(pipe_stderr[1], STDERR_FILENO);
+    // make sure only stdout/stderr points to the pipe
+    close(pipe_stdout[1]);
+    close(pipe_stderr[1]);
+
+    execvp(args[0], args);
+
+  } else {
+    // close write end
+    close(pipe_stdout[1]);
+    close(pipe_stderr[1]);
+
+    char stdout_buf[128], stderr_buf[128];
+    size_t stdout_n, stderr_n;
+
+    while (true) {
+      stdout_n = read(pipe_stdout[0], stdout_buf, sizeof(stdout_buf));
+      stderr_n = read(pipe_stderr[0], stderr_buf, sizeof(stderr_buf));
+
+      if (stdout_n > 0) {
+        fwrite(stdout_buf, 1, stdout_n, stdout);
+      }
+      if (stderr_n > 0) {
+        fwrite(stderr_buf, 1, stdout_n, stderr);
+      }
+
+      if (stdout_n <= 0 && stderr_n <= 0) {
+        break;
+      }
+    }
+
+    close(pipe_stdout[0]);
+    close(pipe_stderr[0]);
+    waitpid(pid, NULL, 0);
+    temp_arena_memory_end(temp);
+  }
+}
+
+internal void run(Arena *a, StringList *full_cmd, StringList *builtin_cmds,
+                  StringList *env_path_list) {
+  assert(full_cmd != NULL);
+  assert(full_cmd->node_count > 0);
+  assert(full_cmd->first != NULL);
+  assert(full_cmd->last != NULL);
+
+  String exe = full_cmd->first->string;
+  String exe_path = search_path(a, exe, env_path_list);
+  if (exe_path.size > 0) {
+    run_exec(a, full_cmd, exe);
+  } else {
+    printf("%.*s: command not found\n", (int)exe.size, exe.str);
   }
 }
 
@@ -357,6 +437,9 @@ int main(int argc, char *argv[]) {
     cmd[strcspn(cmd, "\n")] = '\0';
 
     StringList list = str_split_cstr(&arena, cmd, "\n\t ");
+    if (list.node_count == 0) {
+      continue;
+    }
 
     if (str_equal_cstr(list.first->string, "exit")) {
       break;
@@ -365,7 +448,7 @@ int main(int argc, char *argv[]) {
     } else if (str_equal_cstr(list.first->string, "type")) {
       type(&arena, &list, &builtin_cmds, &env_path_list);
     } else {
-      printf("%s: command not found\n", cmd);
+      run(&arena, &list, &builtin_cmds, &env_path_list);
     }
   }
 
