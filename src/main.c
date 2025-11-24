@@ -5,6 +5,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/syslimits.h>
+#include <sys/unistd.h>
+#include <unistd.h>
 
 #define global static
 #define local_persist static
@@ -71,6 +74,28 @@ internal void *arena_alloc(Arena *a, size_t size) {
 internal void arena_free_all(Arena *a) {
   a->curr_offset = 0;
   a->prev_offset = 0;
+}
+
+typedef struct TempArenaMemory TempArenaMemory;
+struct TempArenaMemory {
+  Arena *arena;
+  size_t prev_offset;
+  size_t curr_offset;
+};
+
+TempArenaMemory temp_arena_memory_begin(Arena *a) {
+  TempArenaMemory temp = {
+      .arena = a,
+      .prev_offset = a->prev_offset,
+      .curr_offset = a->curr_offset,
+  };
+
+  return temp;
+}
+
+void temp_arena_memory_end(TempArenaMemory temp) {
+  temp.arena->prev_offset = temp.prev_offset;
+  temp.arena->curr_offset = temp.curr_offset;
 }
 
 typedef struct String String;
@@ -177,6 +202,27 @@ internal StringList str_split(Arena *a, String string, String split_chars) {
   return list;
 }
 
+internal String str_concat_sep(Arena *a, String s1, String s2, String sep) {
+  String result = {0};
+  size_t size = s1.size + s2.size + sep.size;
+  uint8_t *buf = (uint8_t *)arena_alloc(a, size);
+
+  memcpy(buf, s1.str, s1.size);
+  if (sep.size > 0) {
+    memcpy(buf + s1.size, sep.str, sep.size);
+  }
+  memcpy(buf + s1.size + sep.size, s2.str, s2.size);
+
+  result.str = buf;
+  result.size = size;
+  return result;
+}
+
+internal String str_concat(Arena *a, String s1, String s2) {
+  String sep = {0};
+  return str_concat_sep(a, s1, s2, sep);
+}
+
 internal StringList str_split_cstr(Arena *a, char *cstr, char *split_chars) {
   String str = str_init(cstr, strlen(cstr));
   String split_chars_str = str_init(split_chars, strlen(split_chars));
@@ -217,6 +263,8 @@ internal void echo(StringList *cmd) {
 }
 
 internal bool is_builtin(String cmd, StringList *builtin_cmds) {
+  assert(builtin_cmds != NULL);
+
   bool result = false;
   StringNode *ptr = builtin_cmds->first;
   for (; ptr != NULL; ptr = ptr->next) {
@@ -228,19 +276,61 @@ internal bool is_builtin(String cmd, StringList *builtin_cmds) {
   return result;
 }
 
-internal void type(StringList *cmd, StringList *builtin_cmds) {
-  assert(cmd != NULL);
-  assert(cmd->node_count == 2);
-  assert(cmd->first != NULL);
-  assert(cmd->last != NULL);
+internal String search_path(Arena *a, String cmd, StringList *env_path_list) {
+  assert(env_path_list != NULL);
+  String result = {0};
+  String sep = {.str = (uint8_t *)"/", .size = 1};
 
-  String exe = cmd->last->string;
+  TempArenaMemory temp = temp_arena_memory_begin(a);
+  char *buffer = (char *)arena_alloc(a, PATH_MAX);
+
+  StringNode *ptr = env_path_list->first;
+  for (; ptr != NULL; ptr = ptr->next) {
+    String file_path = {0};
+    if (ptr->string.str[ptr->string.size - 1] == '/') {
+      file_path = str_concat(a, ptr->string, cmd);
+    } else {
+      file_path = str_concat_sep(a, ptr->string, cmd, sep);
+    }
+
+    // TODO: make this a utility function String -> cstring
+    memcpy(buffer, file_path.str, file_path.size);
+    buffer[file_path.size] = '\0';
+
+    if (access(buffer, X_OK) == 0) {
+      result = file_path;
+      break;
+    }
+  }
+
+  temp_arena_memory_end(temp);
+
+  return result;
+}
+
+internal void type(Arena *a, StringList *full_cmd, StringList *builtin_cmds,
+                   StringList *env_path_list) {
+  assert(full_cmd != NULL);
+  assert(full_cmd->node_count == 2);
+  assert(full_cmd->first != NULL);
+  assert(full_cmd->last != NULL);
+
+  String exe = full_cmd->last->string;
   if (is_builtin(exe, builtin_cmds)) {
+    // TODO: improve printing for String
     str_print(exe);
     printf(" is a shell builtin\n");
   } else {
-    str_print(exe);
-    printf(": not found\n");
+    String exe_path = search_path(a, exe, env_path_list);
+    if (exe_path.size > 0) {
+      str_print(exe);
+      printf(" is ");
+      str_print(exe_path);
+      printf("\n");
+    } else {
+      str_print(exe);
+      printf(": not found\n");
+    }
   }
 }
 
@@ -257,6 +347,9 @@ int main(int argc, char *argv[]) {
   str_list_push_cstr(&arena, &builtin_cmds, "echo");
   str_list_push_cstr(&arena, &builtin_cmds, "exit");
 
+  char *env_path = getenv("PATH");
+  StringList env_path_list = str_split_cstr(&arena, env_path, ":");
+
   while (true) {
     printf("$ ");
 
@@ -271,7 +364,7 @@ int main(int argc, char *argv[]) {
     } else if (str_equal_cstr(list.first->string, "echo")) {
       echo(&list);
     } else if (str_equal_cstr(list.first->string, "type")) {
-      type(&list, &builtin_cmds);
+      type(&arena, &list, &builtin_cmds, &env_path_list);
     } else {
       printf("%s: command not found\n", cmd);
     }
