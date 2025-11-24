@@ -413,6 +413,19 @@ internal void run(Arena *a, StringList *full_cmd, StringList *builtin_cmds,
   }
 }
 
+internal void pwd(Arena *a, StringList *full_cmd) {
+  assert(full_cmd != NULL);
+  assert(full_cmd->node_count == 1);
+  assert(full_cmd->first != NULL);
+  assert(full_cmd->last != NULL);
+
+  TempArenaMemory temp = temp_arena_memory_begin(a);
+  char *buf = (char *)arena_alloc(a, PATH_MAX_LEN);
+  getcwd(buf, PATH_MAX_LEN);
+  printf("%s\n", buf);
+  temp_arena_memory_end(temp);
+}
+
 int main(int argc, char *argv[]) {
   // Flush after every printf
   setbuf(stdout, NULL);
@@ -425,6 +438,7 @@ int main(int argc, char *argv[]) {
   str_list_push_cstr(&arena, &builtin_cmds, "type");
   str_list_push_cstr(&arena, &builtin_cmds, "echo");
   str_list_push_cstr(&arena, &builtin_cmds, "exit");
+  str_list_push_cstr(&arena, &builtin_cmds, "pwd");
 
   char *env_path = getenv("PATH");
   StringList env_path_list = str_split_cstr(&arena, env_path, ":");
@@ -445,6 +459,8 @@ int main(int argc, char *argv[]) {
       break;
     } else if (str_equal_cstr(list.first->string, "echo")) {
       echo(&list);
+    } else if (str_equal_cstr(list.first->string, "pwd")) {
+      pwd(&arena, &list);
     } else if (str_equal_cstr(list.first->string, "type")) {
       type(&arena, &list, &builtin_cmds, &env_path_list);
     } else {
