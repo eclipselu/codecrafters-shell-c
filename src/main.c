@@ -5,8 +5,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/syslimits.h>
-#include <sys/unistd.h>
 #include <unistd.h>
 
 #define global static
@@ -19,6 +17,7 @@
 
 #define KB 1024
 #define MB (1024 * KB)
+#define PATH_MAX_LEN 4096
 
 // Arena
 typedef struct Arena Arena;
@@ -282,7 +281,7 @@ internal String search_path(Arena *a, String cmd, StringList *env_path_list) {
   String sep = {.str = (uint8_t *)"/", .size = 1};
 
   TempArenaMemory temp = temp_arena_memory_begin(a);
-  char *buffer = (char *)arena_alloc(a, PATH_MAX);
+  char *buffer = (char *)arena_alloc(a, PATH_MAX_LEN);
 
   StringNode *ptr = env_path_list->first;
   for (; ptr != NULL; ptr = ptr->next) {
