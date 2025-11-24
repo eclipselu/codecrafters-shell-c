@@ -441,11 +441,17 @@ internal void cd(Arena *a, StringList *full_cmd) {
   assert(full_cmd->first != NULL);
   assert(full_cmd->last != NULL);
 
+  char *env_home = getenv("HOME");
+
   TempArenaMemory temp = temp_arena_memory_begin(a);
   String dir = full_cmd->last->string;
   char *buf = (char *)arena_alloc(a, PATH_MAX_LEN);
   memcpy(buf, dir.str, dir.size);
   buf[dir.size] = '\0';
+
+  if (str_equal_cstr(dir, "~")) {
+    buf = env_home;
+  }
 
   if (is_directory(buf)) {
     chdir(buf);
