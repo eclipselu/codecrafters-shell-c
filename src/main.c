@@ -24,6 +24,7 @@
 
 #define SINGLE_QUOTE '\''
 #define DOUBLE_QUOTE '"'
+#define BACKSLASH '\\'
 
 // Arena
 typedef struct Arena Arena;
@@ -483,13 +484,32 @@ internal String eval_token(Arena *a, StringList *tokens) {
   StringNode *ptr = tokens->first;
   for (; ptr != NULL; ptr = ptr->next) {
     char ch = ptr->string.str[0];
-    if (ch == SINGLE_QUOTE || ch == DOUBLE_QUOTE) {
+    if (ch == SINGLE_QUOTE) {
+      // treated literally
       size_t cpy_size = ptr->string.size - 2;
       memcpy(buf_ptr, ptr->string.str + 1, cpy_size);
       buf_ptr += cpy_size;
+    } else if (ch == DOUBLE_QUOTE) {
+      // TODO
     } else {
-      memcpy(buf_ptr, ptr->string.str, ptr->string.size);
-      buf_ptr += ptr->string.size;
+      // no quote
+      String str = ptr->string;
+      bool escape = false;
+
+      for (int i = 0; i < str.size; i += 1) {
+        char ch = str.str[i];
+        if (escape) {
+          *(buf_ptr - 1) = ch;
+          escape = false;
+        } else {
+          *buf_ptr = ch;
+          buf_ptr += 1;
+
+          if (ch == BACKSLASH) {
+            escape = true;
+          }
+        }
+      }
     }
   }
 
@@ -513,11 +533,12 @@ internal StringList parse_command(Arena *a, char *cmd_str) {
     int end = start;
     StringList tokens_with_quote = {0};
     char current_quote = '\0'; // default empty: no quote, can also be " or '
+    char prev_ch = '\0';
 
     for (; end < cmd.size; end += 1) {
       char ch = cmd.str[end];
 
-      if (ch == SINGLE_QUOTE || ch == DOUBLE_QUOTE) {
+      if ((ch == SINGLE_QUOTE || ch == DOUBLE_QUOTE) && prev_ch != BACKSLASH) {
         if (ch == current_quote) {
           // quote finished
           str_list_push(a, &tokens_with_quote, str_substr(cmd, start, end + 1));
@@ -531,7 +552,8 @@ internal StringList parse_command(Arena *a, char *cmd_str) {
           current_quote = ch;
           start = end;
         }
-      } else if ((ch == ' ' || ch == '\t') && current_quote == '\0') {
+      } else if ((ch == ' ' || ch == '\t') && current_quote == '\0' &&
+                 prev_ch != BACKSLASH) {
         // not in a quote, and sees a space or tab
         str_list_push(a, &tokens_with_quote, str_substr(cmd, start, end));
         start = end;
@@ -541,6 +563,8 @@ internal StringList parse_command(Arena *a, char *cmd_str) {
         start = end + 1;
         break;
       }
+
+      prev_ch = ch;
     }
 
     if (tokens_with_quote.node_count > 0) {
