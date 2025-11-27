@@ -493,7 +493,7 @@ internal String eval_token(Arena *a, StringList *tokens) {
       String str = ptr->string;
       bool escape = false;
 
-      for (int i = 0; i < str.size; i += 1) {
+      for (int i = 1; i < str.size - 1; i += 1) {
         char ch = str.str[i];
         if (escape) {
           if (ch == DOUBLE_QUOTE || ch == BACKSLASH) {
