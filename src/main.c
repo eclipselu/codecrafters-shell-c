@@ -490,7 +490,28 @@ internal String eval_token(Arena *a, StringList *tokens) {
       memcpy(buf_ptr, ptr->string.str + 1, cpy_size);
       buf_ptr += cpy_size;
     } else if (ch == DOUBLE_QUOTE) {
-      // TODO
+      String str = ptr->string;
+      bool escape = false;
+
+      for (int i = 0; i < str.size; i += 1) {
+        char ch = str.str[i];
+        if (escape) {
+          if (ch == DOUBLE_QUOTE || ch == BACKSLASH) {
+            *(buf_ptr - 1) = ch;
+          } else {
+            *buf_ptr = ch;
+            buf_ptr += 1;
+          }
+          escape = false;
+        } else {
+          *buf_ptr = ch;
+          buf_ptr += 1;
+
+          if (ch == BACKSLASH) {
+            escape = true;
+          }
+        }
+      }
     } else {
       // no quote
       String str = ptr->string;
