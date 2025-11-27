@@ -22,6 +22,9 @@
 #define MB (1024 * KB)
 #define PATH_MAX_LEN 4096
 
+#define SINGLE_QUOTE '\''
+#define DOUBLE_QUOTE '"'
+
 // Arena
 typedef struct Arena Arena;
 struct Arena {
@@ -225,6 +228,15 @@ internal String str_concat(Arena *a, String s1, String s2) {
   return str_concat_sep(a, s1, s2, sep);
 }
 
+internal String str_substr(String s, uint64_t start, uint64_t end) {
+  assert(start <= end);
+  assert(end <= s.size);
+
+  size_t size = end - start;
+  String result = {.str = s.str + start, .size = size};
+  return result;
+}
+
 internal StringList str_split_cstr(Arena *a, char *cstr, char *split_chars) {
   String str = str_init(cstr, strlen(cstr));
   String split_chars_str = str_init(split_chars, strlen(split_chars));
@@ -420,11 +432,9 @@ internal void pwd(Arena *a, StringList *full_cmd) {
   assert(full_cmd->first != NULL);
   assert(full_cmd->last != NULL);
 
-  TempArenaMemory temp = temp_arena_memory_begin(a);
   char *buf = (char *)arena_alloc(a, PATH_MAX_LEN);
   getcwd(buf, PATH_MAX_LEN);
   printf("%s\n", buf);
-  temp_arena_memory_end(temp);
 }
 
 internal bool is_directory(const char *path) {
@@ -461,6 +471,87 @@ internal void cd(Arena *a, StringList *full_cmd) {
   temp_arena_memory_end(temp);
 }
 
+internal String eval_token(Arena *a, StringList *tokens) {
+  assert(tokens != NULL);
+  assert(tokens->node_count > 0);
+  assert(tokens->first != NULL);
+  assert(tokens->last != NULL);
+
+  char *buf = (char *)arena_alloc(a, tokens->total_size);
+  char *buf_ptr = buf;
+
+  StringNode *ptr = tokens->first;
+  for (; ptr != NULL; ptr = ptr->next) {
+    char ch = ptr->string.str[0];
+    if (ch == SINGLE_QUOTE || ch == DOUBLE_QUOTE) {
+      size_t cpy_size = ptr->string.size - 2;
+      memcpy(buf_ptr, ptr->string.str + 1, cpy_size);
+      buf_ptr += cpy_size;
+    } else {
+      memcpy(buf_ptr, ptr->string.str, ptr->string.size);
+      buf_ptr += ptr->string.size;
+    }
+  }
+
+  size_t size = buf_ptr - buf;
+  String token = {.str = (uint8_t *)buf, .size = size};
+  return token;
+}
+
+internal StringList parse_command(Arena *a, char *cmd_str) {
+  StringList parsed = {0};
+  String cmd = {.str = (uint8_t *)cmd_str, .size = strlen(cmd_str)};
+
+  int start = 0;
+  for (; start <= cmd.size; start += 1) {
+    // consume prefixing spaces
+    for (;
+         start < cmd.size && (cmd.str[start] == ' ' || cmd.str[start] == '\t');
+         start += 1)
+      ;
+
+    int end = start;
+    StringList tokens_with_quote = {0};
+    char current_quote = '\0'; // default empty: no quote, can also be " or '
+
+    for (; end < cmd.size; end += 1) {
+      char ch = cmd.str[end];
+
+      if (ch == SINGLE_QUOTE || ch == DOUBLE_QUOTE) {
+        if (ch == current_quote) {
+          // quote finished
+          str_list_push(a, &tokens_with_quote, str_substr(cmd, start, end + 1));
+          current_quote = '\0';
+          start = end + 1;
+        } else if (current_quote == '\0') {
+          // starting quote, the previous token should be pushed
+          if (end > start) {
+            str_list_push(a, &tokens_with_quote, str_substr(cmd, start, end));
+          }
+          current_quote = ch;
+          start = end;
+        }
+      } else if ((ch == ' ' || ch == '\t') && current_quote == '\0') {
+        // not in a quote, and sees a space or tab
+        str_list_push(a, &tokens_with_quote, str_substr(cmd, start, end));
+        start = end;
+        break;
+      } else if (end + 1 == cmd.size) {
+        str_list_push(a, &tokens_with_quote, str_substr(cmd, start, end + 1));
+        start = end + 1;
+        break;
+      }
+    }
+
+    if (tokens_with_quote.node_count > 0) {
+      String token = eval_token(a, &tokens_with_quote);
+      str_list_push(a, &parsed, token);
+    }
+  }
+
+  return parsed;
+}
+
 int main(int argc, char *argv[]) {
   // Flush after every printf
   setbuf(stdout, NULL);
@@ -486,7 +577,9 @@ int main(int argc, char *argv[]) {
     fgets(cmd, sizeof(cmd), stdin);
     cmd[strcspn(cmd, "\n")] = '\0';
 
-    StringList list = str_split_cstr(&arena, cmd, "\n\t ");
+    TempArenaMemory temp = temp_arena_memory_begin(&arena);
+
+    StringList list = parse_command(&arena, cmd);
     if (list.node_count == 0) {
       continue;
     }
@@ -504,6 +597,8 @@ int main(int argc, char *argv[]) {
     } else {
       run(&arena, &list, &builtin_cmds, &env_path_list);
     }
+
+    temp_arena_memory_end(temp);
   }
 
   free(arena_backing_buffer);
