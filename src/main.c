@@ -1,5 +1,7 @@
 #include <assert.h>
 #include <fcntl.h>
+#include <readline/history.h>
+#include <readline/readline.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -27,6 +29,9 @@
 #define SINGLE_QUOTE '\''
 #define DOUBLE_QUOTE '"'
 #define BACKSLASH '\\'
+
+global const char *builtin_commands[] = {"type", "echo", "exit",
+                                         "pwd",  "cd",   NULL};
 
 // Arena
 typedef struct Arena Arena;
@@ -126,7 +131,7 @@ struct StringList {
   uint64_t total_size;
 };
 
-internal String str_init(char *str, uint64_t size) {
+internal String str_init(const char *str, uint64_t size) {
   String result = {.str = (uint8_t *)str, .size = size};
   return result;
 }
@@ -153,9 +158,28 @@ internal bool str_equal(String a, String b) {
   return equal;
 }
 
-internal bool str_equal_cstr(String s, char *cstr) {
+internal bool str_equal_cstr(String s, const char *cstr) {
   String b = str_init(cstr, strlen(cstr));
   return str_equal(s, b);
+}
+
+internal bool str_starts_with_cstr(String s, char *cstr) {
+  assert(cstr != NULL);
+
+  size_t len = strlen(cstr);
+  bool result = true;
+  if (len <= s.size) {
+    for (int idx = 0; idx < len; idx += 1) {
+      if (s.str[idx] != cstr[idx]) {
+        result = false;
+        break;
+      }
+    }
+  } else {
+    result = false;
+  }
+
+  return result;
 }
 
 internal bool str_ends_with_cstr(String s, char *cstr) {
@@ -316,13 +340,10 @@ internal void echo(ShellCommand *cmd) {
   }
 }
 
-internal bool is_builtin(String cmd, StringList *builtin_cmds) {
-  assert(builtin_cmds != NULL);
-
+internal bool is_builtin(String cmd) {
   bool result = false;
-  StringNode *ptr = builtin_cmds->first;
-  for (; ptr != NULL; ptr = ptr->next) {
-    if (str_equal(cmd, ptr->string)) {
+  for (int i = 0; builtin_commands[i] != NULL; i += 1) {
+    if (str_equal_cstr(cmd, builtin_commands[i])) {
       result = true;
       break;
     }
@@ -362,12 +383,12 @@ internal String search_path(Arena *a, String cmd, StringList *env_path_list) {
   return result;
 }
 
-internal void type(Arena *a, ShellCommand *shell_cmd, StringList *builtin_cmds,
+internal void type(Arena *a, ShellCommand *shell_cmd,
                    StringList *env_path_list) {
   assert(shell_cmd->args.node_count == 2);
 
   String exe = shell_cmd->args.first->next->string;
-  if (is_builtin(exe, builtin_cmds)) {
+  if (is_builtin(exe)) {
     // TODO: improve printing for String
     str_print(exe);
     printf(" is a shell builtin\n");
@@ -449,7 +470,7 @@ internal void run_exec(Arena *a, ShellCommand *shell_cmd) {
   }
 }
 
-internal void run(Arena *a, ShellCommand *shell_cmd, StringList *builtin_cmds,
+internal void run(Arena *a, ShellCommand *shell_cmd,
                   StringList *env_path_list) {
   assert(shell_cmd->exe.size > 0);
 
@@ -669,6 +690,32 @@ internal ShellCommand parse_command(Arena *a, char *cmd_str) {
   return shell_cmd;
 }
 
+char *cmd_generator(const char *text, int state) {
+  local_persist int list_index, len;
+
+  // On first call: reset state
+  if (!state) {
+    list_index = 0;
+    len = strlen(text);
+  }
+
+  while (builtin_commands[list_index] != NULL) {
+    const char *cmd = builtin_commands[list_index++];
+    if (strncmp(cmd, text, len) == 0) {
+      return strdup(cmd); // readline will free this
+    }
+  }
+
+  return NULL; // No more matches
+}
+
+char **cmd_completion(const char *text, int start, int end) {
+  if (start == 0) {
+    return rl_completion_matches(text, cmd_generator);
+  }
+  return NULL;
+}
+
 int main(int argc, char *argv[]) {
   // Flush after every printf
   setbuf(stdout, NULL);
@@ -687,12 +734,13 @@ int main(int argc, char *argv[]) {
   char *env_path = getenv("PATH");
   StringList env_path_list = str_split_cstr(&arena, env_path, ":");
 
+  rl_attempted_completion_function = cmd_completion;
   while (true) {
-    printf("$ ");
-
-    char cmd[1024];
-    fgets(cmd, sizeof(cmd), stdin);
-    cmd[strcspn(cmd, "\n")] = '\0';
+    char *cmd = NULL;
+    cmd = readline("$ ");
+    if (cmd == NULL) {
+      continue;
+    }
 
     TempArenaMemory temp = temp_arena_memory_begin(&arena);
 
@@ -720,11 +768,11 @@ int main(int argc, char *argv[]) {
     } else if (str_equal_cstr(shell_cmd.exe, "pwd")) {
       pwd(&arena, &shell_cmd);
     } else if (str_equal_cstr(shell_cmd.exe, "type")) {
-      type(&arena, &shell_cmd, &builtin_cmds, &env_path_list);
+      type(&arena, &shell_cmd, &env_path_list);
     } else if (str_equal_cstr(shell_cmd.exe, "cd")) {
       cd(&arena, &shell_cmd);
     } else {
-      run(&arena, &shell_cmd, &builtin_cmds, &env_path_list);
+      run(&arena, &shell_cmd, &env_path_list);
     }
 
     if (saved_source_fd > 0) {
@@ -732,6 +780,7 @@ int main(int argc, char *argv[]) {
       close(saved_source_fd);
     }
 
+    free(cmd);
     temp_arena_memory_end(temp);
   }
 
