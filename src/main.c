@@ -1,10 +1,12 @@
 #include <assert.h>
+#include <fcntl.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -129,6 +131,13 @@ internal String str_init(char *str, uint64_t size) {
   return result;
 }
 
+internal char *to_cstring(Arena *a, String s) {
+  char *cstr = (char *)arena_alloc(a, s.size + 1);
+  memcpy(cstr, s.str, s.size);
+  cstr[s.size] = '\0';
+  return cstr;
+}
+
 internal bool str_equal(String a, String b) {
   bool equal = true;
   if (a.size == b.size) {
@@ -147,6 +156,25 @@ internal bool str_equal(String a, String b) {
 internal bool str_equal_cstr(String s, char *cstr) {
   String b = str_init(cstr, strlen(cstr));
   return str_equal(s, b);
+}
+
+internal bool str_ends_with_cstr(String s, char *cstr) {
+  assert(cstr != NULL);
+
+  size_t len = strlen(cstr);
+  bool result = true;
+  if (len <= s.size) {
+    for (int idx = s.size - len; idx < s.size; idx += 1) {
+      if (s.str[idx] != cstr[idx]) {
+        result = false;
+        break;
+      }
+    }
+  } else {
+    result = false;
+  }
+
+  return result;
 }
 
 internal StringNode *str_list_push(Arena *a, StringList *list, String str) {
@@ -261,17 +289,30 @@ internal void str_list_print(StringList *list) {
   }
 }
 
-internal void echo(StringList *cmd) {
-  assert(cmd != NULL);
-  assert(cmd->node_count > 0);
-  assert(cmd->first != NULL);
+typedef struct RedirectInfo RedirectInfo;
+struct RedirectInfo {
+  int source_fd;
+  String output_file_name;
+  int flag;
+};
 
-  StringNode *args = cmd->first->next;
-  while (args != NULL) {
-    str_print(args->string);
-    char split = args->next == NULL ? '\n' : ' ';
+typedef struct ShellCommand ShellCommand;
+struct ShellCommand {
+  String exe;
+  StringList args;
+  RedirectInfo redir_info;
+};
+
+internal void echo(ShellCommand *cmd) {
+  assert(cmd->args.total_size > 0);
+  assert(cmd->args.first != NULL);
+
+  StringNode *arg = cmd->args.first->next;
+  while (arg != NULL) {
+    str_print(arg->string);
+    char split = arg->next == NULL ? '\n' : ' ';
     putchar(split);
-    args = args->next;
+    arg = arg->next;
   }
 }
 
@@ -321,14 +362,11 @@ internal String search_path(Arena *a, String cmd, StringList *env_path_list) {
   return result;
 }
 
-internal void type(Arena *a, StringList *full_cmd, StringList *builtin_cmds,
+internal void type(Arena *a, ShellCommand *shell_cmd, StringList *builtin_cmds,
                    StringList *env_path_list) {
-  assert(full_cmd != NULL);
-  assert(full_cmd->node_count == 2);
-  assert(full_cmd->first != NULL);
-  assert(full_cmd->last != NULL);
+  assert(shell_cmd->args.node_count == 2);
 
-  String exe = full_cmd->last->string;
+  String exe = shell_cmd->args.first->next->string;
   if (is_builtin(exe, builtin_cmds)) {
     // TODO: improve printing for String
     str_print(exe);
@@ -344,19 +382,19 @@ internal void type(Arena *a, StringList *full_cmd, StringList *builtin_cmds,
   }
 }
 
-internal void run_exec(Arena *a, StringList *full_cmd, String exe) {
+internal void run_exec(Arena *a, ShellCommand *shell_cmd) {
   TempArenaMemory temp = temp_arena_memory_begin(a);
 
-  char **args =
-      (char **)arena_alloc(a, sizeof(char *) * (full_cmd->node_count + 1));
-  StringNode *ptr = full_cmd->first;
+  char **args = (char **)arena_alloc(a, sizeof(char *) *
+                                            (shell_cmd->args.node_count + 1));
+  StringNode *ptr = shell_cmd->args.first;
   for (int index = 0; ptr != NULL; ptr = ptr->next, index += 1) {
     char *buf = (char *)arena_alloc(a, ptr->string.size + 1);
     memcpy(buf, ptr->string.str, ptr->string.size);
     buf[ptr->string.size] = '\0';
     args[index] = buf;
   }
-  args[full_cmd->node_count] = NULL;
+  args[shell_cmd->args.node_count] = NULL;
 
   int pipe_stdout[2];
   int pipe_stderr[2];
@@ -411,27 +449,21 @@ internal void run_exec(Arena *a, StringList *full_cmd, String exe) {
   }
 }
 
-internal void run(Arena *a, StringList *full_cmd, StringList *builtin_cmds,
+internal void run(Arena *a, ShellCommand *shell_cmd, StringList *builtin_cmds,
                   StringList *env_path_list) {
-  assert(full_cmd != NULL);
-  assert(full_cmd->node_count > 0);
-  assert(full_cmd->first != NULL);
-  assert(full_cmd->last != NULL);
+  assert(shell_cmd->exe.size > 0);
 
-  String exe = full_cmd->first->string;
+  String exe = shell_cmd->exe;
   String exe_path = search_path(a, exe, env_path_list);
   if (exe_path.size > 0) {
-    run_exec(a, full_cmd, exe);
+    run_exec(a, shell_cmd);
   } else {
     printf("%.*s: command not found\n", (int)exe.size, exe.str);
   }
 }
 
-internal void pwd(Arena *a, StringList *full_cmd) {
-  assert(full_cmd != NULL);
-  assert(full_cmd->node_count == 1);
-  assert(full_cmd->first != NULL);
-  assert(full_cmd->last != NULL);
+internal void pwd(Arena *a, ShellCommand *shell_cmd) {
+  assert(shell_cmd->args.node_count == 1);
 
   char *buf = (char *)arena_alloc(a, PATH_MAX_LEN);
   getcwd(buf, PATH_MAX_LEN);
@@ -446,16 +478,13 @@ internal bool is_directory(const char *path) {
   return false;
 }
 
-internal void cd(Arena *a, StringList *full_cmd) {
-  assert(full_cmd != NULL);
-  assert(full_cmd->node_count == 2);
-  assert(full_cmd->first != NULL);
-  assert(full_cmd->last != NULL);
+internal void cd(Arena *a, ShellCommand *shell_cmd) {
+  assert(shell_cmd->args.node_count == 2);
 
   char *env_home = getenv("HOME");
 
   TempArenaMemory temp = temp_arena_memory_begin(a);
-  String dir = full_cmd->last->string;
+  String dir = shell_cmd->args.first->string;
   char *buf = (char *)arena_alloc(a, PATH_MAX_LEN);
   memcpy(buf, dir.str, dir.size);
   buf[dir.size] = '\0';
@@ -470,6 +499,29 @@ internal void cd(Arena *a, StringList *full_cmd) {
     printf("cd: %s: No such file or directory\n", buf);
   }
   temp_arena_memory_end(temp);
+}
+
+internal RedirectInfo parse_redirect(String s, StringNode *file_name) {
+  RedirectInfo info = {0};
+  if (file_name == NULL) {
+    return info;
+  }
+
+  int source_fd = -1;
+
+  if (str_equal_cstr(s, ">") || str_equal_cstr(s, "1>") ||
+      str_equal_cstr(s, "2>")) {
+    info.source_fd = s.size == 1 ? 1 : s.str[0] - '0';
+    info.output_file_name = file_name->string;
+    info.flag = O_TRUNC;
+  } else if (str_equal_cstr(s, ">>") || str_equal_cstr(s, "1>>") ||
+             str_equal_cstr(s, "2>")) {
+    info.source_fd = s.size == 2 ? 1 : s.str[0] - '0';
+    info.output_file_name = file_name->string;
+    info.flag = O_APPEND;
+  }
+
+  return info;
 }
 
 internal String eval_token(Arena *a, StringList *tokens) {
@@ -539,8 +591,8 @@ internal String eval_token(Arena *a, StringList *tokens) {
   return token;
 }
 
-internal StringList parse_command(Arena *a, char *cmd_str) {
-  StringList parsed = {0};
+internal ShellCommand parse_command(Arena *a, char *cmd_str) {
+  StringList tokens = {0};
   String cmd = {.str = (uint8_t *)cmd_str, .size = strlen(cmd_str)};
 
   int start = 0;
@@ -590,11 +642,31 @@ internal StringList parse_command(Arena *a, char *cmd_str) {
 
     if (tokens_with_quote.node_count > 0) {
       String token = eval_token(a, &tokens_with_quote);
-      str_list_push(a, &parsed, token);
+      str_list_push(a, &tokens, token);
     }
   }
 
-  return parsed;
+  StringList args = {0};
+  StringNode *token_ptr = tokens.first;
+  RedirectInfo redirect_info = {0};
+
+  for (; token_ptr != NULL; token_ptr = token_ptr->next) {
+    RedirectInfo info = parse_redirect(token_ptr->string, token_ptr->next);
+    if (info.source_fd > 0) {
+      redirect_info = info;
+    } else {
+      if (redirect_info.source_fd <= 0) {
+        str_list_push(a, &args, token_ptr->string);
+      }
+    }
+  }
+
+  ShellCommand shell_cmd = {
+      .exe = tokens.first->string,
+      .args = args,
+      .redir_info = redirect_info,
+  };
+  return shell_cmd;
 }
 
 int main(int argc, char *argv[]) {
@@ -624,23 +696,40 @@ int main(int argc, char *argv[]) {
 
     TempArenaMemory temp = temp_arena_memory_begin(&arena);
 
-    StringList list = parse_command(&arena, cmd);
-    if (list.node_count == 0) {
+    ShellCommand shell_cmd = parse_command(&arena, cmd);
+    if (shell_cmd.exe.size == 0) {
       continue;
     }
 
-    if (str_equal_cstr(list.first->string, "exit")) {
+    int saved_source_fd = 0;
+    if (shell_cmd.redir_info.source_fd > 0) {
+      char *file_name =
+          to_cstring(&arena, shell_cmd.redir_info.output_file_name);
+      int fd =
+          open(file_name, O_WRONLY | O_CREAT | shell_cmd.redir_info.flag, 0644);
+
+      saved_source_fd = dup(shell_cmd.redir_info.source_fd);
+      dup2(fd, shell_cmd.redir_info.source_fd);
+      close(fd);
+    }
+
+    if (str_equal_cstr(shell_cmd.exe, "exit")) {
       break;
-    } else if (str_equal_cstr(list.first->string, "echo")) {
-      echo(&list);
-    } else if (str_equal_cstr(list.first->string, "pwd")) {
-      pwd(&arena, &list);
-    } else if (str_equal_cstr(list.first->string, "type")) {
-      type(&arena, &list, &builtin_cmds, &env_path_list);
-    } else if (str_equal_cstr(list.first->string, "cd")) {
-      cd(&arena, &list);
+    } else if (str_equal_cstr(shell_cmd.exe, "echo")) {
+      echo(&shell_cmd);
+    } else if (str_equal_cstr(shell_cmd.exe, "pwd")) {
+      pwd(&arena, &shell_cmd);
+    } else if (str_equal_cstr(shell_cmd.exe, "type")) {
+      type(&arena, &shell_cmd, &builtin_cmds, &env_path_list);
+    } else if (str_equal_cstr(shell_cmd.exe, "cd")) {
+      cd(&arena, &shell_cmd);
     } else {
-      run(&arena, &list, &builtin_cmds, &env_path_list);
+      run(&arena, &shell_cmd, &builtin_cmds, &env_path_list);
+    }
+
+    if (saved_source_fd > 0) {
+      dup2(saved_source_fd, shell_cmd.redir_info.source_fd);
+      close(saved_source_fd);
     }
 
     temp_arena_memory_end(temp);
