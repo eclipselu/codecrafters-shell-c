@@ -55,6 +55,17 @@ internal bool str_equal(String a, String b) {
   return equal;
 }
 
+internal bool str_is_posnum(String s) {
+  bool result = true;
+  for (int i = 0; i < s.size; i += 1) {
+    if (s.str[i] < '0' || s.str[i] > '9') {
+      result = false;
+      break;
+    }
+  }
+  return result;
+}
+
 internal bool str_equal_cstr(String s, const char *cstr) {
   String b = str_init(cstr, strlen(cstr));
   return str_equal(s, b);

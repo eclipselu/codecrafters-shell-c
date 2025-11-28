@@ -462,21 +462,34 @@ internal char **cmd_completion(const char *text, int start, int end) {
   return NULL;
 }
 
-internal void history(Arena *a, ShellCommand *shell_cmd) {
-  assert(shell_cmd->args.node_count == 1 || shell_cmd->args.node_count == 2);
-
-  int n = history_length;
-  if (shell_cmd->args.node_count >= 2) {
-    String s = shell_cmd->args.first->next->string;
-    n = atoi(to_cstring(a, s));
-    if (n > history_length) {
-      n = history_length;
-    }
-  }
-
+internal void print_history(Arena *a, int n) {
   for (int i = history_length - n; i < history_length; i += 1) {
     HIST_ENTRY *e = history_get(i + history_base);
     printf("    %d  %s\n", i + history_base, e->line);
+  }
+}
+
+internal void history(Arena *a, ShellCommand *shell_cmd) {
+  int argc = shell_cmd->args.node_count;
+  assert(argc > 0);
+
+  if (argc == 1) {
+    print_history(a, history_length);
+  } else if (argc == 2) {
+    if (str_is_posnum(shell_cmd->args.last->string)) {
+      int n = history_length;
+      String s = shell_cmd->args.last->string;
+      n = atoi(to_cstring(a, s));
+      if (n > history_length) {
+        n = history_length;
+      }
+      print_history(a, n);
+    }
+  } else if (argc == 3) {
+    if (str_equal_cstr(shell_cmd->args.first->next->string, "-r")) {
+      String histfile = shell_cmd->args.last->string;
+      read_history(to_cstring(a, histfile));
+    }
   }
 }
 
