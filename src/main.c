@@ -434,7 +434,7 @@ internal void run_exec(Arena *a, ShellCommand *shell_cmd) {
         fwrite(stdout_buf, 1, stdout_n, stdout);
       }
       if (stderr_n > 0) {
-        fwrite(stderr_buf, 1, stdout_n, stderr);
+        fwrite(stderr_buf, 1, stderr_n, stderr);
       }
 
       if (stdout_n <= 0 && stderr_n <= 0) {
