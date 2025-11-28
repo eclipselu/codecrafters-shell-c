@@ -21,8 +21,8 @@
 
 // include builtin and executables in PATH
 global StringList existing_commands = {0};
-global const char *builtin_commands[] = {"type", "echo", "exit",
-                                         "pwd",  "cd",   NULL};
+global const char *builtin_commands[] = {"type", "echo",    "exit", "pwd",
+                                         "cd",   "history", NULL};
 
 typedef struct RedirectInfo RedirectInfo;
 struct RedirectInfo {
@@ -462,6 +462,24 @@ internal char **cmd_completion(const char *text, int start, int end) {
   return NULL;
 }
 
+internal void history(Arena *a, ShellCommand *shell_cmd) {
+  assert(shell_cmd->args.node_count == 1 || shell_cmd->args.node_count == 2);
+
+  int n = history_length;
+  if (shell_cmd->args.node_count >= 2) {
+    String s = shell_cmd->args.first->next->string;
+    n = atoi(to_cstring(a, s));
+    if (n > history_length) {
+      n = history_length;
+    }
+  }
+
+  for (int i = history_length - n; i < history_length; i += 1) {
+    HIST_ENTRY *e = history_get(i + history_base);
+    printf("    %d  %s\n", i + history_base, e->line);
+  }
+}
+
 int main(int argc, char *argv[]) {
   // Flush after every printf
   setbuf(stdout, NULL);
@@ -472,8 +490,17 @@ int main(int argc, char *argv[]) {
 
   char *env_path = getenv("PATH");
   StringList env_path_list = str_split_cstr(&arena, env_path, ":");
+  char *env_histfile = getenv("HISTFILE");
 
+  // setup readline
+  // 1. completion
   rl_attempted_completion_function = cmd_completion;
+  // 2. history
+  using_history();
+  if (env_histfile != NULL) {
+    read_history(env_histfile);
+  }
+
   while (true) {
     TempArenaMemory temp = temp_arena_memory_begin(&arena);
 
@@ -484,6 +511,7 @@ int main(int argc, char *argv[]) {
     if (cmd == NULL) {
       continue;
     }
+    add_history(cmd);
 
     ShellCommand shell_cmd = parse_command(&arena, cmd);
     if (shell_cmd.exe.size == 0) {
@@ -512,6 +540,8 @@ int main(int argc, char *argv[]) {
       type(&arena, &shell_cmd, &env_path_list);
     } else if (str_equal_cstr(shell_cmd.exe, "cd")) {
       cd(&arena, &shell_cmd);
+    } else if (str_equal_cstr(shell_cmd.exe, "history")) {
+      history(&arena, &shell_cmd);
     } else {
       run(&arena, &shell_cmd, &env_path_list);
     }
