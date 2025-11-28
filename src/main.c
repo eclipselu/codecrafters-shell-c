@@ -515,7 +515,7 @@ internal RedirectInfo parse_redirect(String s, StringNode *file_name) {
     info.output_file_name = file_name->string;
     info.flag = O_TRUNC;
   } else if (str_equal_cstr(s, ">>") || str_equal_cstr(s, "1>>") ||
-             str_equal_cstr(s, "2>")) {
+             str_equal_cstr(s, "2>>")) {
     info.source_fd = s.size == 2 ? 1 : s.str[0] - '0';
     info.output_file_name = file_name->string;
     info.flag = O_APPEND;
