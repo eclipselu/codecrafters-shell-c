@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <readline/history.h>
 #include <readline/readline.h>
@@ -14,304 +15,14 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#define global static
-#define local_persist static
-#define internal static
+#include "arena.h"
+#include "base.h"
+#include "base_string.h"
 
-#ifndef DEFAULT_ALIGNMENT
-#define DEFAULT_ALIGNMENT (2 * sizeof(void *))
-#endif
-
-#define KB 1024
-#define MB (1024 * KB)
-#define PATH_MAX_LEN 4096
-
-#define SINGLE_QUOTE '\''
-#define DOUBLE_QUOTE '"'
-#define BACKSLASH '\\'
-
+// include builtin and executables in PATH
+global StringList existing_commands = {0};
 global const char *builtin_commands[] = {"type", "echo", "exit",
                                          "pwd",  "cd",   NULL};
-
-// Arena
-typedef struct Arena Arena;
-struct Arena {
-  uint8_t *buf;
-  size_t buf_size;
-  size_t prev_offset;
-  size_t curr_offset;
-};
-
-// align will be 2's power
-internal uintptr_t align_forward(uintptr_t ptr, size_t align) {
-  assert((align & (align - 1)) == 0);
-
-  uintptr_t p = ptr;
-  uintptr_t a = align;
-  uintptr_t modulo = p % a;
-
-  if (modulo != 0) {
-    p = p + (a - modulo);
-  }
-  return p;
-}
-
-internal void arena_init(Arena *a, void *backing_buffer,
-                         size_t backing_buffer_size) {
-  a->buf = (uint8_t *)backing_buffer;
-  a->buf_size = backing_buffer_size;
-  a->curr_offset = 0;
-  a->prev_offset = 0;
-}
-
-internal void *arena_alloc_align(Arena *a, size_t size, size_t align) {
-  uintptr_t curr_ptr = (uintptr_t)a->buf + a->curr_offset;
-  uintptr_t aligned_ptr = align_forward(curr_ptr, align);
-  uintptr_t aligned_offset = aligned_ptr - (uintptr_t)a->buf;
-
-  if (aligned_offset + size <= a->buf_size) {
-    a->prev_offset = aligned_offset;
-    a->curr_offset = aligned_offset + size;
-
-    // Zero memory
-    memset((void *)aligned_ptr, 0, size);
-    return (void *)aligned_ptr;
-  }
-  return NULL;
-}
-
-internal void *arena_alloc(Arena *a, size_t size) {
-  return arena_alloc_align(a, size, DEFAULT_ALIGNMENT);
-}
-
-internal void arena_free_all(Arena *a) {
-  a->curr_offset = 0;
-  a->prev_offset = 0;
-}
-
-typedef struct TempArenaMemory TempArenaMemory;
-struct TempArenaMemory {
-  Arena *arena;
-  size_t prev_offset;
-  size_t curr_offset;
-};
-
-TempArenaMemory temp_arena_memory_begin(Arena *a) {
-  TempArenaMemory temp = {
-      .arena = a,
-      .prev_offset = a->prev_offset,
-      .curr_offset = a->curr_offset,
-  };
-
-  return temp;
-}
-
-void temp_arena_memory_end(TempArenaMemory temp) {
-  temp.arena->prev_offset = temp.prev_offset;
-  temp.arena->curr_offset = temp.curr_offset;
-}
-
-typedef struct String String;
-struct String {
-  uint8_t *str;
-  uint64_t size;
-};
-
-typedef struct StringNode StringNode;
-struct StringNode {
-  String string;
-  StringNode *next;
-};
-
-typedef struct StringList StringList;
-struct StringList {
-  StringNode *first;
-  StringNode *last;
-  uint64_t node_count;
-  uint64_t total_size;
-};
-
-internal String str_init(const char *str, uint64_t size) {
-  String result = {.str = (uint8_t *)str, .size = size};
-  return result;
-}
-
-internal char *to_cstring(Arena *a, String s) {
-  char *cstr = (char *)arena_alloc(a, s.size + 1);
-  memcpy(cstr, s.str, s.size);
-  cstr[s.size] = '\0';
-  return cstr;
-}
-
-internal bool str_equal(String a, String b) {
-  bool equal = true;
-  if (a.size == b.size) {
-    for (int i = 0; i < a.size; i += 1) {
-      if (a.str[i] != b.str[i]) {
-        equal = false;
-        break;
-      }
-    }
-  } else {
-    equal = false;
-  }
-  return equal;
-}
-
-internal bool str_equal_cstr(String s, const char *cstr) {
-  String b = str_init(cstr, strlen(cstr));
-  return str_equal(s, b);
-}
-
-internal bool str_starts_with_cstr(String s, char *cstr) {
-  assert(cstr != NULL);
-
-  size_t len = strlen(cstr);
-  bool result = true;
-  if (len <= s.size) {
-    for (int idx = 0; idx < len; idx += 1) {
-      if (s.str[idx] != cstr[idx]) {
-        result = false;
-        break;
-      }
-    }
-  } else {
-    result = false;
-  }
-
-  return result;
-}
-
-internal bool str_ends_with_cstr(String s, char *cstr) {
-  assert(cstr != NULL);
-
-  size_t len = strlen(cstr);
-  bool result = true;
-  if (len <= s.size) {
-    for (int idx = s.size - len; idx < s.size; idx += 1) {
-      if (s.str[idx] != cstr[idx]) {
-        result = false;
-        break;
-      }
-    }
-  } else {
-    result = false;
-  }
-
-  return result;
-}
-
-internal StringNode *str_list_push(Arena *a, StringList *list, String str) {
-  StringNode *node = (StringNode *)arena_alloc(a, sizeof(StringNode));
-  node->string = str;
-
-  if (list->first == NULL) {
-    list->first = node;
-  }
-  if (list->last != NULL) {
-    list->last->next = node;
-  }
-  list->last = node;
-  list->node_count += 1;
-  list->total_size += str.size;
-
-  return node;
-}
-
-internal StringNode *str_list_push_cstr(Arena *a, StringList *list,
-                                        char *cstr) {
-  String str = str_init(cstr, strlen(cstr));
-  return str_list_push(a, list, str);
-}
-
-internal StringList str_split(Arena *a, String string, String split_chars) {
-  StringList list = {0};
-  uint8_t *ptr = string.str;
-  uint8_t *end = string.str + string.size;
-
-  for (; ptr < end; ptr += 1) {
-    uint8_t *first = ptr;
-    bool found = false;
-
-    for (; ptr < end; ptr += 1) {
-      uint8_t ch = *ptr;
-
-      for (int i = 0; i < split_chars.size; i += 1) {
-        if (split_chars.str[i] == ch) {
-          found = true;
-          break;
-        }
-      }
-
-      if (found) {
-        break;
-      }
-    }
-
-    String result = {0};
-    result.str = first;
-    result.size = (uint64_t)(ptr - first);
-
-    if (result.size > 0) {
-      str_list_push(a, &list, result);
-    }
-  }
-
-  return list;
-}
-
-internal String str_concat_sep(Arena *a, String s1, String s2, String sep) {
-  String result = {0};
-  size_t size = s1.size + s2.size + sep.size;
-  uint8_t *buf = (uint8_t *)arena_alloc(a, size);
-
-  memcpy(buf, s1.str, s1.size);
-  if (sep.size > 0) {
-    memcpy(buf + s1.size, sep.str, sep.size);
-  }
-  memcpy(buf + s1.size + sep.size, s2.str, s2.size);
-
-  result.str = buf;
-  result.size = size;
-  return result;
-}
-
-internal String str_concat(Arena *a, String s1, String s2) {
-  String sep = {0};
-  return str_concat_sep(a, s1, s2, sep);
-}
-
-internal String str_substr(String s, uint64_t start, uint64_t end) {
-  assert(start <= end);
-  assert(end <= s.size);
-
-  size_t size = end - start;
-  String result = {.str = s.str + start, .size = size};
-  return result;
-}
-
-internal StringList str_split_cstr(Arena *a, char *cstr, char *split_chars) {
-  String str = str_init(cstr, strlen(cstr));
-  String split_chars_str = str_init(split_chars, strlen(split_chars));
-  return str_split(a, str, split_chars_str);
-}
-
-internal void str_print(String str) {
-  if (str.size > 0) {
-    printf("%.*s", (int)str.size, str.str);
-  }
-}
-
-internal void str_list_print(StringList *list) {
-  if (list != NULL) {
-    StringNode *ptr = list->first;
-    for (; ptr != NULL; ptr = ptr->next) {
-      str_print(ptr->string);
-      printf("\n");
-    }
-    printf("\n");
-  }
-}
 
 typedef struct RedirectInfo RedirectInfo;
 struct RedirectInfo {
@@ -682,34 +393,69 @@ internal ShellCommand parse_command(Arena *a, char *cmd_str) {
     }
   }
 
+  String exe = tokens.first == NULL ? (String){0} : tokens.first->string;
   ShellCommand shell_cmd = {
-      .exe = tokens.first->string,
+      .exe = exe,
       .args = args,
       .redir_info = redirect_info,
   };
   return shell_cmd;
 }
 
-char *cmd_generator(const char *text, int state) {
-  local_persist int list_index, len;
+internal void preload_existing_commands(Arena *a, StringList *env_path_list) {
+  assert(env_path_list != NULL);
 
-  // On first call: reset state
-  if (!state) {
-    list_index = 0;
-    len = strlen(text);
+  // existing commands
+  int index = 0;
+  while (builtin_commands[index] != NULL) {
+    str_list_push_cstr(a, &existing_commands, builtin_commands[index]);
+    index += 1;
   }
 
-  while (builtin_commands[list_index] != NULL) {
-    const char *cmd = builtin_commands[list_index++];
-    if (strncmp(cmd, text, len) == 0) {
-      return strdup(cmd); // readline will free this
+  for (StringNode *ptr = env_path_list->first; ptr != NULL; ptr = ptr->next) {
+    char *dirpath = to_cstring(a, ptr->string);
+    DIR *dir = opendir(dirpath);
+    if (dir == NULL) {
+      continue;
+    }
+
+    struct dirent *de = NULL;
+    while ((de = readdir(dir)) != NULL) {
+      char fullpath[PATH_MAX_LEN];
+      snprintf(fullpath, sizeof(fullpath), "%s/%s", dirpath, de->d_name);
+
+      struct stat st;
+      if (stat(fullpath, &st) != 0) {
+        continue;
+      }
+
+      if (S_ISREG(st.st_mode) && access(fullpath, X_OK) == 0) {
+        str_list_push_cstr(a, &existing_commands, de->d_name);
+      }
+    }
+  }
+}
+
+// TODO:: optimize the speed
+internal char *cmd_generator(const char *text, int state) {
+  local_persist StringNode *cmd_ptr = NULL;
+
+  if (!state) {
+    cmd_ptr = existing_commands.first;
+  }
+
+  while (cmd_ptr != NULL) {
+    const String cmd = cmd_ptr->string;
+    cmd_ptr = cmd_ptr->next;
+    if (str_starts_with_cstr(cmd, text)) {
+      return strndup((const char *)cmd.str, cmd.size);
     }
   }
 
   return NULL; // No more matches
 }
 
-char **cmd_completion(const char *text, int start, int end) {
+internal char **cmd_completion(const char *text, int start, int end) {
   if (start == 0) {
     return rl_completion_matches(text, cmd_generator);
   }
@@ -724,25 +470,20 @@ int main(int argc, char *argv[]) {
   Arena arena = {0};
   arena_init(&arena, arena_backing_buffer, 4 * MB);
 
-  StringList builtin_cmds = {0};
-  str_list_push_cstr(&arena, &builtin_cmds, "type");
-  str_list_push_cstr(&arena, &builtin_cmds, "echo");
-  str_list_push_cstr(&arena, &builtin_cmds, "exit");
-  str_list_push_cstr(&arena, &builtin_cmds, "pwd");
-  str_list_push_cstr(&arena, &builtin_cmds, "cd");
-
   char *env_path = getenv("PATH");
   StringList env_path_list = str_split_cstr(&arena, env_path, ":");
 
   rl_attempted_completion_function = cmd_completion;
   while (true) {
+    TempArenaMemory temp = temp_arena_memory_begin(&arena);
+
+    preload_existing_commands(&arena, &env_path_list);
+
     char *cmd = NULL;
     cmd = readline("$ ");
     if (cmd == NULL) {
       continue;
     }
-
-    TempArenaMemory temp = temp_arena_memory_begin(&arena);
 
     ShellCommand shell_cmd = parse_command(&arena, cmd);
     if (shell_cmd.exe.size == 0) {
@@ -781,6 +522,7 @@ int main(int argc, char *argv[]) {
     }
 
     free(cmd);
+
     temp_arena_memory_end(temp);
   }
 
