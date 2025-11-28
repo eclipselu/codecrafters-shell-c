@@ -484,7 +484,7 @@ internal void cd(Arena *a, ShellCommand *shell_cmd) {
   char *env_home = getenv("HOME");
 
   TempArenaMemory temp = temp_arena_memory_begin(a);
-  String dir = shell_cmd->args.first->string;
+  String dir = shell_cmd->args.first->next->string;
   char *buf = (char *)arena_alloc(a, PATH_MAX_LEN);
   memcpy(buf, dir.str, dir.size);
   buf[dir.size] = '\0';
