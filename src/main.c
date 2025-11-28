@@ -486,9 +486,12 @@ internal void history(Arena *a, ShellCommand *shell_cmd) {
       print_history(a, n);
     }
   } else if (argc == 3) {
-    if (str_equal_cstr(shell_cmd->args.first->next->string, "-r")) {
-      String histfile = shell_cmd->args.last->string;
+    String flag = shell_cmd->args.first->next->string;
+    String histfile = shell_cmd->args.last->string;
+    if (str_equal_cstr(flag, "-r")) {
       read_history(to_cstring(a, histfile));
+    } else if (str_equal_cstr(flag, "-w")) {
+      write_history(to_cstring(a, histfile));
     }
   }
 }
