@@ -24,6 +24,9 @@ global StringList existing_commands = {0};
 global const char *builtin_commands[] = {"type", "echo",    "exit", "pwd",
                                          "cd",   "history", NULL};
 
+// history
+global int last_append_cmd_idx = -1;
+
 typedef struct RedirectInfo RedirectInfo;
 struct RedirectInfo {
   int source_fd;
@@ -469,6 +472,17 @@ internal void print_history(Arena *a, int n) {
   }
 }
 
+internal void append_history_file(const char *histfile) {
+  FILE *f = fopen(histfile, "a");
+  if (f) {
+    for (int i = last_append_cmd_idx + 1; i < history_length; i++) {
+      HIST_ENTRY *e = history_get(i + history_base);
+      fprintf(f, "%s\n", e->line);
+    }
+    fclose(f);
+  }
+}
+
 internal void history(Arena *a, ShellCommand *shell_cmd) {
   int argc = shell_cmd->args.node_count;
   assert(argc > 0);
@@ -492,6 +506,9 @@ internal void history(Arena *a, ShellCommand *shell_cmd) {
       read_history(to_cstring(a, histfile));
     } else if (str_equal_cstr(flag, "-w")) {
       write_history(to_cstring(a, histfile));
+    } else if (str_equal_cstr(flag, "-a")) {
+      append_history_file(to_cstring(a, histfile));
+      last_append_cmd_idx = history_length - 1;
     }
   }
 }
