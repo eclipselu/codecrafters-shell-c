@@ -589,6 +589,10 @@ int main(int argc, char *argv[]) {
     temp_arena_memory_end(temp);
   }
 
+  if (env_histfile != NULL) {
+    write_history(env_histfile);
+  }
+
   free(arena_backing_buffer);
   return 0;
 }
