@@ -41,6 +41,38 @@ struct ShellCommand {
   RedirectInfo redir_info;
 };
 
+typedef struct PipedShellCommandNode PipedShellCommandNode;
+struct PipedShellCommandNode {
+  ShellCommand cmd;
+  PipedShellCommandNode *next;
+};
+
+typedef struct PipedShellCommandList PipedShellCommandList;
+struct PipedShellCommandList {
+  PipedShellCommandNode *first;
+  PipedShellCommandNode *last;
+  uint64_t node_count;
+};
+
+internal PipedShellCommandNode *piped_cmd_list_push(Arena *a,
+                                                    PipedShellCommandList *list,
+                                                    ShellCommand shell_cmd) {
+  PipedShellCommandNode *node =
+      (PipedShellCommandNode *)arena_alloc(a, sizeof(PipedShellCommandNode));
+  node->cmd = shell_cmd;
+
+  if (list->first == NULL) {
+    list->first = node;
+  }
+  if (list->last != NULL) {
+    list->last->next = node;
+  }
+  list->last = node;
+  list->node_count += 1;
+
+  return node;
+}
+
 internal void echo(ShellCommand *cmd) {
   assert(cmd->args.total_size > 0);
   assert(cmd->args.first != NULL);
@@ -140,7 +172,6 @@ internal void run_exec(Arena *a, ShellCommand *shell_cmd) {
 
   // child process
   if (pid == 0) {
-
     // close read end
     close(pipe_stdout[0]);
     close(pipe_stderr[0]);
@@ -326,7 +357,7 @@ internal String eval_token(Arena *a, StringList *tokens) {
   return token;
 }
 
-internal ShellCommand parse_command(Arena *a, char *cmd_str) {
+internal StringList tokenize_command(Arena *a, char *cmd_str) {
   StringList tokens = {0};
   String cmd = {.str = (uint8_t *)cmd_str, .size = strlen(cmd_str)};
 
@@ -381,28 +412,44 @@ internal ShellCommand parse_command(Arena *a, char *cmd_str) {
     }
   }
 
-  StringList args = {0};
-  StringNode *token_ptr = tokens.first;
-  RedirectInfo redirect_info = {0};
+  return tokens;
+}
 
-  for (; token_ptr != NULL; token_ptr = token_ptr->next) {
-    RedirectInfo info = parse_redirect(token_ptr->string, token_ptr->next);
-    if (info.source_fd > 0) {
-      redirect_info = info;
-    } else {
-      if (redirect_info.source_fd <= 0) {
-        str_list_push(a, &args, token_ptr->string);
+internal PipedShellCommandList parse_command(Arena *a, char *cmd_str) {
+  PipedShellCommandList piped_list = {0};
+
+  StringList tokens = tokenize_command(a, cmd_str);
+  StringNode *token_ptr = tokens.first;
+
+  while (token_ptr != NULL) {
+    StringList args = {0};
+    RedirectInfo redirect_info = {0};
+
+    for (; token_ptr != NULL; token_ptr = token_ptr->next) {
+      if (str_equal_cstr(token_ptr->string, "|")) {
+        token_ptr = token_ptr->next;
+        break;
+      }
+
+      RedirectInfo info = parse_redirect(token_ptr->string, token_ptr->next);
+      if (info.source_fd > 0) {
+        redirect_info = info;
+      } else {
+        if (redirect_info.source_fd <= 0) {
+          str_list_push(a, &args, token_ptr->string);
+        }
       }
     }
+    String exe = tokens.first == NULL ? (String){0} : tokens.first->string;
+    ShellCommand shell_cmd = {
+        .exe = exe,
+        .args = args,
+        .redir_info = redirect_info,
+    };
+    piped_cmd_list_push(a, &piped_list, shell_cmd);
   }
 
-  String exe = tokens.first == NULL ? (String){0} : tokens.first->string;
-  ShellCommand shell_cmd = {
-      .exe = exe,
-      .args = args,
-      .redir_info = redirect_info,
-  };
-  return shell_cmd;
+  return piped_list;
 }
 
 internal void preload_existing_commands(Arena *a, StringList *env_path_list) {
@@ -513,6 +560,52 @@ internal void history(Arena *a, ShellCommand *shell_cmd) {
   }
 }
 
+internal bool run_shell_command(Arena *arena, ShellCommand *shell_cmd,
+                                StringList *env_path_list) {
+
+  if (str_equal_cstr(shell_cmd->exe, "exit")) {
+    return true;
+  }
+
+  int saved_source_fd = 0;
+  RedirectInfo redir_info = shell_cmd->redir_info;
+  if (redir_info.source_fd > 0) {
+    char *file_name = to_cstring(arena, redir_info.output_file_name);
+    int fd = open(file_name, O_WRONLY | O_CREAT | redir_info.flag, 0644);
+
+    saved_source_fd = dup(redir_info.source_fd);
+    dup2(fd, redir_info.source_fd);
+    close(fd);
+  }
+
+  if (str_equal_cstr(shell_cmd->exe, "echo")) {
+    echo(shell_cmd);
+  } else if (str_equal_cstr(shell_cmd->exe, "pwd")) {
+    pwd(arena, shell_cmd);
+  } else if (str_equal_cstr(shell_cmd->exe, "type")) {
+    type(arena, shell_cmd, env_path_list);
+  } else if (str_equal_cstr(shell_cmd->exe, "cd")) {
+    cd(arena, shell_cmd);
+  } else if (str_equal_cstr(shell_cmd->exe, "history")) {
+    history(arena, shell_cmd);
+  } else if (shell_cmd->exe.size > 0) {
+    run(arena, shell_cmd, env_path_list);
+  }
+
+  if (saved_source_fd > 0) {
+    dup2(saved_source_fd, redir_info.source_fd);
+    close(saved_source_fd);
+  }
+
+  return false;
+}
+
+internal bool run_piped_shell_command(Arena *a,
+                                      PipedShellCommandList *piped_cmd_list,
+                                      StringList *env_path_list) {
+  return run_shell_command(a, &piped_cmd_list->first->cmd, env_path_list);
+}
+
 int main(int argc, char *argv[]) {
   // Flush after every printf
   setbuf(stdout, NULL);
@@ -546,46 +639,14 @@ int main(int argc, char *argv[]) {
     }
     add_history(cmd);
 
-    ShellCommand shell_cmd = parse_command(&arena, cmd);
-    if (shell_cmd.exe.size == 0) {
-      continue;
-    }
-
-    int saved_source_fd = 0;
-    if (shell_cmd.redir_info.source_fd > 0) {
-      char *file_name =
-          to_cstring(&arena, shell_cmd.redir_info.output_file_name);
-      int fd =
-          open(file_name, O_WRONLY | O_CREAT | shell_cmd.redir_info.flag, 0644);
-
-      saved_source_fd = dup(shell_cmd.redir_info.source_fd);
-      dup2(fd, shell_cmd.redir_info.source_fd);
-      close(fd);
-    }
-
-    if (str_equal_cstr(shell_cmd.exe, "exit")) {
+    PipedShellCommandList piped_shell_cmd = parse_command(&arena, cmd);
+    bool should_exit =
+        run_piped_shell_command(&arena, &piped_shell_cmd, &env_path_list);
+    if (should_exit) {
       break;
-    } else if (str_equal_cstr(shell_cmd.exe, "echo")) {
-      echo(&shell_cmd);
-    } else if (str_equal_cstr(shell_cmd.exe, "pwd")) {
-      pwd(&arena, &shell_cmd);
-    } else if (str_equal_cstr(shell_cmd.exe, "type")) {
-      type(&arena, &shell_cmd, &env_path_list);
-    } else if (str_equal_cstr(shell_cmd.exe, "cd")) {
-      cd(&arena, &shell_cmd);
-    } else if (str_equal_cstr(shell_cmd.exe, "history")) {
-      history(&arena, &shell_cmd);
-    } else {
-      run(&arena, &shell_cmd, &env_path_list);
-    }
-
-    if (saved_source_fd > 0) {
-      dup2(saved_source_fd, shell_cmd.redir_info.source_fd);
-      close(saved_source_fd);
     }
 
     free(cmd);
-
     temp_arena_memory_end(temp);
   }
 
