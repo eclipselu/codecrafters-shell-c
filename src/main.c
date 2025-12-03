@@ -438,13 +438,15 @@ internal void preload_existing_commands(Arena *a, StringList *env_path_list) {
       char fullpath[PATH_MAX_LEN];
       snprintf(fullpath, sizeof(fullpath), "%s/%s", dirpath, de->d_name);
 
+      String exe = str_clone_from_cstring(a, de->d_name, strlen(de->d_name));
+
       struct stat st;
       if (stat(fullpath, &st) != 0) {
         continue;
       }
 
       if (S_ISREG(st.st_mode) && access(fullpath, X_OK) == 0) {
-        str_list_push_cstr(a, &existing_commands, de->d_name);
+        str_list_push(a, &existing_commands, exe);
       }
     }
 
@@ -575,7 +577,9 @@ internal void run_shell_command(Arena *arena, ShellCommand *shell_cmd,
 internal void run_piped_shell_command(Arena *a,
                                       PipedShellCommandList *piped_cmd_list,
                                       StringList *env_path_list) {
-  assert(piped_cmd_list->node_count > 0);
+  if (piped_cmd_list->node_count == 0) {
+    return;
+  }
 
   // no pipe
   if (piped_cmd_list->node_count == 1) {
@@ -676,7 +680,6 @@ int main(int argc, char *argv[]) {
 
   while (shell_running) {
     TempArenaMemory temp = temp_arena_memory_begin(&arena);
-
     preload_existing_commands(&arena, &env_path_list);
 
     char *cmd = NULL;

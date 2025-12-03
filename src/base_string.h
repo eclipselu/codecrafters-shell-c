@@ -33,6 +33,14 @@ internal String str_init(const char *str, uint64_t size) {
   return result;
 }
 
+internal String str_clone_from_cstring(Arena *a, const char *str,
+                                       uint64_t size) {
+  uint8_t *buf = (uint8_t *)arena_alloc(a, size);
+  memcpy(buf, str, size);
+  String string = {.str = buf, .size = size};
+  return string;
+}
+
 internal char *to_cstring(Arena *a, String s) {
   char *cstr = (char *)arena_alloc(a, s.size + 1);
   memcpy(cstr, s.str, s.size);
