@@ -182,53 +182,12 @@ internal void run_exec(Arena *a, ShellCommand *shell_cmd,
   char **args = NULL;
   cmd_to_execvp_args(a, shell_cmd, &args);
 
-  int pipe_stdout[2];
-  int pipe_stderr[2];
-  pipe(pipe_stdout);
-  pipe(pipe_stderr);
-
   pid_t pid = fork();
 
   // child process
   if (pid == 0) {
-    // close read end
-    close(pipe_stdout[0]);
-    close(pipe_stderr[0]);
-    // redirect
-    dup2(pipe_stdout[1], STDOUT_FILENO);
-    dup2(pipe_stderr[1], STDERR_FILENO);
-    // make sure only stdout/stderr points to the pipe
-    close(pipe_stdout[1]);
-    close(pipe_stderr[1]);
-
     execvp(args[0], args);
-
   } else {
-    // close write end
-    close(pipe_stdout[1]);
-    close(pipe_stderr[1]);
-
-    char stdout_buf[128], stderr_buf[128];
-    size_t stdout_n, stderr_n;
-
-    while (true) {
-      stdout_n = read(pipe_stdout[0], stdout_buf, sizeof(stdout_buf));
-      stderr_n = read(pipe_stderr[0], stderr_buf, sizeof(stderr_buf));
-
-      if (stdout_n > 0) {
-        fwrite(stdout_buf, 1, stdout_n, stdout);
-      }
-      if (stderr_n > 0) {
-        fwrite(stderr_buf, 1, stderr_n, stderr);
-      }
-
-      if (stdout_n <= 0 && stderr_n <= 0) {
-        break;
-      }
-    }
-
-    close(pipe_stdout[0]);
-    close(pipe_stderr[0]);
     waitpid(pid, NULL, 0);
   }
 }
