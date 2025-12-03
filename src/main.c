@@ -447,6 +447,8 @@ internal void preload_existing_commands(Arena *a, StringList *env_path_list) {
         str_list_push_cstr(a, &existing_commands, de->d_name);
       }
     }
+
+    closedir(dir);
   }
 }
 
