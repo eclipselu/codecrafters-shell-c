@@ -637,7 +637,7 @@ internal void run_piped_shell_command(Arena *a,
 
   int n_cmds = piped_cmd_list->node_count;
   pid_t *pids = (pid_t *)arena_alloc(a, sizeof(pid_t) * n_cmds);
-  Pipe *pipes = (Pipe *)arena_alloc(a, sizeof(Pipe) * n_cmds);
+  Pipe *pipes = (Pipe *)arena_alloc(a, sizeof(Pipe) * (n_cmds - 1));
   for (int i = 0; i < n_cmds; i += 1) {
     pipe(pipes[i].fds);
   }
@@ -651,13 +651,15 @@ internal void run_piped_shell_command(Arena *a,
     if (pids[cmd_idx] == 0) {
       if (cmd_idx == 0) {
         dup2(pipes[0].fds[1], STDOUT_FILENO);
+      } else if (cmd_idx == n_cmds - 1) {
+        dup2(pipes[cmd_idx - 1].fds[0], STDIN_FILENO);
       } else {
         dup2(pipes[cmd_idx - 1].fds[0], STDIN_FILENO);
         dup2(pipes[cmd_idx].fds[1], STDOUT_FILENO);
       }
 
       // close pipes
-      for (int i = 0; i < n_cmds; i += 1) {
+      for (int i = 0; i < n_cmds - 1; i += 1) {
         close(pipes[i].fds[0]);
         close(pipes[i].fds[1]);
       }
@@ -684,20 +686,6 @@ internal void run_piped_shell_command(Arena *a,
     close(pipes[i].fds[0]);
     close(pipes[i].fds[1]);
   }
-  close(pipes[n_cmds - 1].fds[1]);
-
-  // read from the last command
-  while (true) {
-    stdout_n = read(pipes[n_cmds - 1].fds[0], stdout_buf, sizeof(stdout_buf));
-
-    if (stdout_n > 0) {
-      fwrite(stdout_buf, 1, stdout_n, stdout);
-    }
-    if (stdout_n <= 0)
-      break;
-  }
-  close(pipes[n_cmds - 1].fds[0]);
-
   // wait on finish
   for (int i = 0; i < n_cmds; i += 1) {
     waitpid(pids[i], NULL, 0);
