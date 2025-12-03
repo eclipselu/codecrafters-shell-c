@@ -26,6 +26,7 @@ global const char *builtin_commands[] = {"type", "echo",    "exit", "pwd",
 
 // history
 global int last_append_cmd_idx = -1;
+global bool shell_running = true;
 
 typedef struct RedirectInfo RedirectInfo;
 struct RedirectInfo {
@@ -424,6 +425,7 @@ internal PipedShellCommandList parse_command(Arena *a, char *cmd_str) {
   while (token_ptr != NULL) {
     StringList args = {0};
     RedirectInfo redirect_info = {0};
+    String exe = token_ptr->string;
 
     for (; token_ptr != NULL; token_ptr = token_ptr->next) {
       if (str_equal_cstr(token_ptr->string, "|")) {
@@ -440,7 +442,6 @@ internal PipedShellCommandList parse_command(Arena *a, char *cmd_str) {
         }
       }
     }
-    String exe = tokens.first == NULL ? (String){0} : tokens.first->string;
     ShellCommand shell_cmd = {
         .exe = exe,
         .args = args,
@@ -579,7 +580,8 @@ internal void run_shell_command(Arena *arena, ShellCommand *shell_cmd,
                                 StringList *env_path_list) {
 
   if (str_equal_cstr(shell_cmd->exe, "exit")) {
-    exit(0);
+    shell_running = false;
+    return;
   }
 
   int saved_source_fd = 0;
@@ -637,8 +639,6 @@ internal void run_piped_shell_command(Arena *a,
 
   pid_t pid1 = fork();
   if (pid1 == 0) {
-    char **args = NULL;
-    cmd_to_execvp_args(a, &cmd1, &args);
 
     close(pipefd[0][0]);
     close(pipefd[1][0]);
@@ -646,14 +646,20 @@ internal void run_piped_shell_command(Arena *a,
     dup2(pipefd[0][1], STDOUT_FILENO);
     close(pipefd[0][1]);
 
-    execvp(args[0], args);
+    if (is_builtin(cmd1.exe)) {
+      run_builtin(a, &cmd1, env_path_list);
+      exit(0);
+    } else {
+      char **args = NULL;
+      cmd_to_execvp_args(a, &cmd1, &args);
+      execvp(args[0], args);
+      perror("execvp");
+      exit(1);
+    }
   }
 
   pid_t pid2 = fork();
   if (pid2 == 0) {
-    char **args = NULL;
-    cmd_to_execvp_args(a, &cmd2, &args);
-
     close(pipefd[0][1]);
     close(pipefd[1][0]);
     dup2(pipefd[0][0], STDIN_FILENO);
@@ -661,7 +667,16 @@ internal void run_piped_shell_command(Arena *a,
     close(pipefd[0][0]);
     close(pipefd[1][1]);
 
-    execvp(args[0], args);
+    if (is_builtin(cmd2.exe)) {
+      run_builtin(a, &cmd2, env_path_list);
+      exit(0);
+    } else {
+      char **args = NULL;
+      cmd_to_execvp_args(a, &cmd2, &args);
+      execvp(args[0], args);
+      perror("execvp");
+      exit(1);
+    }
   }
 
   char stdout_buf[256];
@@ -706,7 +721,7 @@ int main(int argc, char *argv[]) {
     read_history(env_histfile);
   }
 
-  while (true) {
+  while (shell_running) {
     TempArenaMemory temp = temp_arena_memory_begin(&arena);
 
     preload_existing_commands(&arena, &env_path_list);
@@ -728,7 +743,6 @@ int main(int argc, char *argv[]) {
   if (env_histfile != NULL) {
     write_history(env_histfile);
   }
-
   free(arena_backing_buffer);
   return 0;
 }
