@@ -55,6 +55,10 @@ struct PipedShellCommandList {
   uint64_t node_count;
 };
 
+typedef struct {
+  int fds[2];
+} Pipe;
+
 internal PipedShellCommandNode *piped_cmd_list_push(Arena *a,
                                                     PipedShellCommandList *list,
                                                     ShellCommand shell_cmd) {
@@ -631,62 +635,60 @@ internal void run_piped_shell_command(Arena *a,
     }
   }
 
-  int pipefd[2][2];
-  pipe(pipefd[0]);
-  pipe(pipefd[1]);
-  ShellCommand cmd1 = piped_cmd_list->first->cmd;
-  ShellCommand cmd2 = piped_cmd_list->last->cmd;
+  int n_cmds = piped_cmd_list->node_count;
+  pid_t *pids = (pid_t *)arena_alloc(a, sizeof(pid_t) * n_cmds);
+  Pipe *pipes = (Pipe *)arena_alloc(a, sizeof(Pipe) * n_cmds);
+  for (int i = 0; i < n_cmds; i += 1) {
+    pipe(pipes[i].fds);
+  }
 
-  pid_t pid1 = fork();
-  if (pid1 == 0) {
+  PipedShellCommandNode *node_ptr = piped_cmd_list->first;
+  int cmd_idx = 0;
+  for (; node_ptr != NULL; node_ptr = node_ptr->next, cmd_idx += 1) {
+    ShellCommand cmd = node_ptr->cmd;
 
-    close(pipefd[0][0]);
-    close(pipefd[1][0]);
-    close(pipefd[1][1]);
-    dup2(pipefd[0][1], STDOUT_FILENO);
-    close(pipefd[0][1]);
+    pids[cmd_idx] = fork();
+    if (pids[cmd_idx] == 0) {
+      if (cmd_idx == 0) {
+        dup2(pipes[0].fds[1], STDOUT_FILENO);
+      } else {
+        dup2(pipes[cmd_idx - 1].fds[0], STDIN_FILENO);
+        dup2(pipes[cmd_idx].fds[1], STDOUT_FILENO);
+      }
 
-    if (is_builtin(cmd1.exe)) {
-      run_builtin(a, &cmd1, env_path_list);
-      exit(0);
-    } else {
-      char **args = NULL;
-      cmd_to_execvp_args(a, &cmd1, &args);
-      execvp(args[0], args);
-      perror("execvp");
-      exit(1);
+      // close pipes
+      for (int i = 0; i < n_cmds; i += 1) {
+        close(pipes[i].fds[0]);
+        close(pipes[i].fds[1]);
+      }
+
+      // execute
+      if (is_builtin(cmd.exe)) {
+        run_builtin(a, &cmd, env_path_list);
+        exit(0);
+      } else {
+        char **args = NULL;
+        cmd_to_execvp_args(a, &cmd, &args);
+        execvp(args[0], args);
+        perror("execvp");
+        exit(1);
+      }
     }
   }
 
-  pid_t pid2 = fork();
-  if (pid2 == 0) {
-    close(pipefd[0][1]);
-    close(pipefd[1][0]);
-    dup2(pipefd[0][0], STDIN_FILENO);
-    dup2(pipefd[1][1], STDOUT_FILENO);
-    close(pipefd[0][0]);
-    close(pipefd[1][1]);
-
-    if (is_builtin(cmd2.exe)) {
-      run_builtin(a, &cmd2, env_path_list);
-      exit(0);
-    } else {
-      char **args = NULL;
-      cmd_to_execvp_args(a, &cmd2, &args);
-      execvp(args[0], args);
-      perror("execvp");
-      exit(1);
-    }
-  }
-
+  // main process
   char stdout_buf[256];
   size_t stdout_n;
 
-  close(pipefd[0][0]);
-  close(pipefd[0][1]);
-  close(pipefd[1][1]);
+  for (int i = 0; i < n_cmds - 1; i += 1) {
+    close(pipes[i].fds[0]);
+    close(pipes[i].fds[1]);
+  }
+  close(pipes[n_cmds - 1].fds[1]);
+
+  // read from the last command
   while (true) {
-    stdout_n = read(pipefd[1][0], stdout_buf, sizeof(stdout_buf));
+    stdout_n = read(pipes[n_cmds - 1].fds[0], stdout_buf, sizeof(stdout_buf));
 
     if (stdout_n > 0) {
       fwrite(stdout_buf, 1, stdout_n, stdout);
@@ -694,10 +696,12 @@ internal void run_piped_shell_command(Arena *a,
     if (stdout_n <= 0)
       break;
   }
+  close(pipes[n_cmds - 1].fds[0]);
 
-  close(pipefd[1][0]);
-  waitpid(pid1, NULL, 0);
-  waitpid(pid2, NULL, 0);
+  // wait on finish
+  for (int i = 0; i < n_cmds; i += 1) {
+    waitpid(pids[i], NULL, 0);
+  }
 }
 
 int main(int argc, char *argv[]) {
