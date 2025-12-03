@@ -149,19 +149,33 @@ internal void type(Arena *a, ShellCommand *shell_cmd,
   }
 }
 
-internal void run_exec(Arena *a, ShellCommand *shell_cmd) {
-  TempArenaMemory temp = temp_arena_memory_begin(a);
-
-  char **args = (char **)arena_alloc(a, sizeof(char *) *
-                                            (shell_cmd->args.node_count + 1));
+internal void cmd_to_execvp_args(Arena *a, ShellCommand *shell_cmd,
+                                 char ***execvp_args) {
+  *execvp_args = (char **)arena_alloc(a, sizeof(char *) *
+                                             (shell_cmd->args.node_count + 1));
   StringNode *ptr = shell_cmd->args.first;
   for (int index = 0; ptr != NULL; ptr = ptr->next, index += 1) {
     char *buf = (char *)arena_alloc(a, ptr->string.size + 1);
     memcpy(buf, ptr->string.str, ptr->string.size);
     buf[ptr->string.size] = '\0';
-    args[index] = buf;
+    (*execvp_args)[index] = buf;
   }
-  args[shell_cmd->args.node_count] = NULL;
+  (*execvp_args)[shell_cmd->args.node_count] = NULL;
+}
+
+internal void run_exec(Arena *a, ShellCommand *shell_cmd,
+                       StringList *env_path_list) {
+  assert(shell_cmd->exe.size > 0);
+
+  String exe = shell_cmd->exe;
+  String exe_path = search_path(a, exe, env_path_list);
+  if (exe_path.size == 0) {
+    printf("%.*s: command not found\n", (int)exe.size, exe.str);
+    return;
+  }
+
+  char **args = NULL;
+  cmd_to_execvp_args(a, shell_cmd, &args);
 
   int pipe_stdout[2];
   int pipe_stderr[2];
@@ -211,20 +225,6 @@ internal void run_exec(Arena *a, ShellCommand *shell_cmd) {
     close(pipe_stdout[0]);
     close(pipe_stderr[0]);
     waitpid(pid, NULL, 0);
-    temp_arena_memory_end(temp);
-  }
-}
-
-internal void run(Arena *a, ShellCommand *shell_cmd,
-                  StringList *env_path_list) {
-  assert(shell_cmd->exe.size > 0);
-
-  String exe = shell_cmd->exe;
-  String exe_path = search_path(a, exe, env_path_list);
-  if (exe_path.size > 0) {
-    run_exec(a, shell_cmd);
-  } else {
-    printf("%.*s: command not found\n", (int)exe.size, exe.str);
   }
 }
 
@@ -560,11 +560,26 @@ internal void history(Arena *a, ShellCommand *shell_cmd) {
   }
 }
 
-internal bool run_shell_command(Arena *arena, ShellCommand *shell_cmd,
+internal void run_builtin(Arena *arena, ShellCommand *shell_cmd,
+                          StringList *env_path_list) {
+  if (str_equal_cstr(shell_cmd->exe, "echo")) {
+    echo(shell_cmd);
+  } else if (str_equal_cstr(shell_cmd->exe, "pwd")) {
+    pwd(arena, shell_cmd);
+  } else if (str_equal_cstr(shell_cmd->exe, "type")) {
+    type(arena, shell_cmd, env_path_list);
+  } else if (str_equal_cstr(shell_cmd->exe, "cd")) {
+    cd(arena, shell_cmd);
+  } else if (str_equal_cstr(shell_cmd->exe, "history")) {
+    history(arena, shell_cmd);
+  }
+}
+
+internal void run_shell_command(Arena *arena, ShellCommand *shell_cmd,
                                 StringList *env_path_list) {
 
   if (str_equal_cstr(shell_cmd->exe, "exit")) {
-    return true;
+    exit(0);
   }
 
   int saved_source_fd = 0;
@@ -578,32 +593,96 @@ internal bool run_shell_command(Arena *arena, ShellCommand *shell_cmd,
     close(fd);
   }
 
-  if (str_equal_cstr(shell_cmd->exe, "echo")) {
-    echo(shell_cmd);
-  } else if (str_equal_cstr(shell_cmd->exe, "pwd")) {
-    pwd(arena, shell_cmd);
-  } else if (str_equal_cstr(shell_cmd->exe, "type")) {
-    type(arena, shell_cmd, env_path_list);
-  } else if (str_equal_cstr(shell_cmd->exe, "cd")) {
-    cd(arena, shell_cmd);
-  } else if (str_equal_cstr(shell_cmd->exe, "history")) {
-    history(arena, shell_cmd);
+  if (is_builtin(shell_cmd->exe)) {
+    run_builtin(arena, shell_cmd, env_path_list);
   } else if (shell_cmd->exe.size > 0) {
-    run(arena, shell_cmd, env_path_list);
+    run_exec(arena, shell_cmd, env_path_list);
   }
 
   if (saved_source_fd > 0) {
     dup2(saved_source_fd, redir_info.source_fd);
     close(saved_source_fd);
   }
-
-  return false;
 }
 
-internal bool run_piped_shell_command(Arena *a,
+internal void run_piped_shell_command(Arena *a,
                                       PipedShellCommandList *piped_cmd_list,
                                       StringList *env_path_list) {
-  return run_shell_command(a, &piped_cmd_list->first->cmd, env_path_list);
+  assert(piped_cmd_list->node_count > 0);
+
+  // no pipe
+  if (piped_cmd_list->node_count == 1) {
+    run_shell_command(a, &piped_cmd_list->first->cmd, env_path_list);
+    return;
+  }
+
+  // check if all commands are valid
+  for (PipedShellCommandNode *cmd_ptr = piped_cmd_list->first; cmd_ptr != NULL;
+       cmd_ptr = cmd_ptr->next) {
+    String exe = cmd_ptr->cmd.exe;
+    if (!is_builtin(exe)) {
+      String exe_path = search_path(a, exe, env_path_list);
+      if (exe_path.size == 0) {
+        printf("%.*s: command not found\n", (int)exe.size, exe.str);
+        return;
+      }
+    }
+  }
+
+  int pipefd[2][2];
+  pipe(pipefd[0]);
+  pipe(pipefd[1]);
+  ShellCommand cmd1 = piped_cmd_list->first->cmd;
+  ShellCommand cmd2 = piped_cmd_list->last->cmd;
+
+  pid_t pid1 = fork();
+  if (pid1 == 0) {
+    char **args = NULL;
+    cmd_to_execvp_args(a, &cmd1, &args);
+
+    close(pipefd[0][0]);
+    close(pipefd[1][0]);
+    close(pipefd[1][1]);
+    dup2(pipefd[0][1], STDOUT_FILENO);
+    close(pipefd[0][1]);
+
+    execvp(args[0], args);
+  }
+
+  pid_t pid2 = fork();
+  if (pid2 == 0) {
+    char **args = NULL;
+    cmd_to_execvp_args(a, &cmd2, &args);
+
+    close(pipefd[0][1]);
+    close(pipefd[1][0]);
+    dup2(pipefd[0][0], STDIN_FILENO);
+    dup2(pipefd[1][1], STDOUT_FILENO);
+    close(pipefd[0][0]);
+    close(pipefd[1][1]);
+
+    execvp(args[0], args);
+  }
+
+  char stdout_buf[256];
+  size_t stdout_n;
+
+  close(pipefd[0][0]);
+  close(pipefd[0][1]);
+  close(pipefd[1][1]);
+  while (true) {
+    stdout_n = read(pipefd[1][0], stdout_buf, sizeof(stdout_buf));
+
+    if (stdout_n > 0) {
+      fwrite(stdout_buf, 1, stdout_n, stdout);
+    }
+    if (stdout_n <= 0)
+      break;
+  }
+
+  close(pipefd[1][0]);
+  waitpid(pid1, NULL, 0);
+  waitpid(pid2, NULL, 0);
 }
 
 int main(int argc, char *argv[]) {
@@ -640,11 +719,7 @@ int main(int argc, char *argv[]) {
     add_history(cmd);
 
     PipedShellCommandList piped_shell_cmd = parse_command(&arena, cmd);
-    bool should_exit =
-        run_piped_shell_command(&arena, &piped_shell_cmd, &env_path_list);
-    if (should_exit) {
-      break;
-    }
+    run_piped_shell_command(&arena, &piped_shell_cmd, &env_path_list);
 
     free(cmd);
     temp_arena_memory_end(temp);
