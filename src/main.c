@@ -422,6 +422,9 @@ internal PipedShellCommandList parse_command(Arena *a, char *cmd_str) {
 internal void preload_existing_commands(Arena *a, StringList *env_path_list) {
   assert(env_path_list != NULL);
 
+  // Clear the list before rebuilding (handles PATH changes)
+  existing_commands = (StringList){0};
+
   // existing commands
   int index = 0;
   while (builtin_commands[index] != NULL) {
