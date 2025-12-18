@@ -683,6 +683,7 @@ int main(int argc, char *argv[]) {
 
   // setup readline
   // 1. completion
+  preload_existing_commands(&arena, &env_path_list);
   rl_attempted_completion_function = cmd_completion;
   // 2. history
   using_history();
@@ -692,7 +693,6 @@ int main(int argc, char *argv[]) {
 
   while (shell_running) {
     TempArenaMemory temp = temp_arena_memory_begin(&arena);
-    preload_existing_commands(&arena, &env_path_list);
 
     char *cmd = NULL;
     cmd = readline("$ ");
