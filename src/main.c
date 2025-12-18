@@ -180,6 +180,11 @@ internal void run_exec(Arena *a, ShellCommand *shell_cmd,
 
   pid_t pid = fork();
 
+  if (pid < 0) {
+    perror("fork");
+    return;
+  }
+
   // child process
   if (pid == 0) {
     execvp(args[0], args);
@@ -611,6 +616,18 @@ internal void run_piped_shell_command(Arena *a,
     ShellCommand cmd = node_ptr->cmd;
 
     pids[cmd_idx] = fork();
+    if (pids[cmd_idx] < 0) {
+      perror("fork");
+      // Clean up pipes and wait for already-forked children
+      for (int i = 0; i < n_cmds - 1; i += 1) {
+        close(pipes[i].fds[0]);
+        close(pipes[i].fds[1]);
+      }
+      for (int i = 0; i < cmd_idx; i += 1) {
+        waitpid(pids[i], NULL, 0);
+      }
+      return;
+    }
     if (pids[cmd_idx] == 0) {
       if (cmd_idx == 0) {
         dup2(pipes[0].fds[1], STDOUT_FILENO);
