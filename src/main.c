@@ -640,9 +640,6 @@ internal void run_piped_shell_command(Arena *a,
   }
 
   // main process
-  char stdout_buf[256];
-  size_t stdout_n;
-
   for (int i = 0; i < n_cmds - 1; i += 1) {
     close(pipes[i].fds[0]);
     close(pipes[i].fds[1]);
