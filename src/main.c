@@ -107,8 +107,7 @@ internal String search_path(Arena *a, String cmd, StringList *env_path_list) {
   String result = {0};
   String sep = {.str = (uint8_t *)"/", .size = 1};
 
-  TempArenaMemory temp = temp_arena_memory_begin(a);
-  char *buffer = (char *)arena_alloc(a, PATH_MAX_LEN);
+  char buffer[PATH_MAX_LEN];
 
   StringNode *ptr = env_path_list->first;
   for (; ptr != NULL; ptr = ptr->next) {
@@ -119,7 +118,6 @@ internal String search_path(Arena *a, String cmd, StringList *env_path_list) {
       file_path = str_concat_sep(a, ptr->string, cmd, sep);
     }
 
-    // TODO: make this a utility function String -> cstring
     memcpy(buffer, file_path.str, file_path.size);
     buffer[file_path.size] = '\0';
 
@@ -128,8 +126,6 @@ internal String search_path(Arena *a, String cmd, StringList *env_path_list) {
       break;
     }
   }
-
-  temp_arena_memory_end(temp);
 
   return result;
 }
