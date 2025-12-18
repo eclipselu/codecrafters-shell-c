@@ -183,6 +183,8 @@ internal void run_exec(Arena *a, ShellCommand *shell_cmd,
   // child process
   if (pid == 0) {
     execvp(args[0], args);
+    perror("execvp");
+    _exit(127);
   } else {
     waitpid(pid, NULL, 0);
   }
