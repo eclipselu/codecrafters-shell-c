@@ -14,7 +14,6 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
-#include <termios.h>
 #include <unistd.h>
 
 #include "arena.h"
@@ -24,120 +23,11 @@
 // include builtin and executables in PATH
 global StringList existing_commands = {0};
 global const char *builtin_commands[] = {"type", "echo",    "exit", "pwd",
-                                         "cd",   "history", "jobs", "fg",
-                                         "bg",   NULL};
+                                         "cd",   "history", NULL};
 
 // history
 global int last_append_cmd_idx = -1;
 global bool shell_running = true;
-
-// Job control
-#define MAX_JOBS 64
-typedef enum { JOB_RUNNING, JOB_STOPPED, JOB_DONE } JobState;
-typedef struct {
-  pid_t pgid;        // Process group ID
-  char *cmd;         // Command string (for display)
-  JobState state;
-  bool valid;
-} Job;
-global Job jobs[MAX_JOBS] = {0};
-global int shell_terminal;
-global pid_t shell_pgid;
-
-internal int add_job(pid_t pgid, const char *cmd) {
-  for (int i = 0; i < MAX_JOBS; i++) {
-    if (!jobs[i].valid) {
-      jobs[i].pgid = pgid;
-      jobs[i].cmd = strdup(cmd);
-      jobs[i].state = JOB_RUNNING;
-      jobs[i].valid = true;
-      return i + 1;  // Job numbers are 1-indexed
-    }
-  }
-  return -1;
-}
-
-internal void remove_job(int job_num) {
-  if (job_num > 0 && job_num <= MAX_JOBS && jobs[job_num - 1].valid) {
-    free(jobs[job_num - 1].cmd);
-    jobs[job_num - 1] = (Job){0};
-  }
-}
-
-internal int find_job_by_pgid(pid_t pgid) {
-  for (int i = 0; i < MAX_JOBS; i++) {
-    if (jobs[i].valid && jobs[i].pgid == pgid) {
-      return i + 1;
-    }
-  }
-  return -1;
-}
-
-internal void print_job(int job_num) {
-  if (job_num > 0 && job_num <= MAX_JOBS && jobs[job_num - 1].valid) {
-    Job *j = &jobs[job_num - 1];
-    const char *state_str = j->state == JOB_RUNNING ? "Running" :
-                            j->state == JOB_STOPPED ? "Stopped" : "Done";
-    printf("[%d] %s\t\t%s\n", job_num, state_str, j->cmd);
-  }
-}
-
-internal void wait_for_job(int job_num) {
-  if (job_num <= 0 || job_num > MAX_JOBS || !jobs[job_num - 1].valid) {
-    return;
-  }
-  Job *j = &jobs[job_num - 1];
-
-  // Give terminal control to the job
-  tcsetpgrp(shell_terminal, j->pgid);
-
-  int status;
-  pid_t pid;
-  while ((pid = waitpid(-j->pgid, &status, WUNTRACED)) > 0) {
-    if (WIFSTOPPED(status)) {
-      j->state = JOB_STOPPED;
-      printf("\n[%d] Stopped\t\t%s\n", job_num, j->cmd);
-      break;
-    } else if (WIFEXITED(status) || WIFSIGNALED(status)) {
-      // Process exited
-      j->state = JOB_DONE;
-      remove_job(job_num);
-      break;
-    }
-  }
-
-  // Take back terminal control
-  tcsetpgrp(shell_terminal, shell_pgid);
-}
-
-internal void continue_job(int job_num, bool foreground) {
-  if (job_num <= 0 || job_num > MAX_JOBS || !jobs[job_num - 1].valid) {
-    printf("%s: job not found\n", foreground ? "fg" : "bg");
-    return;
-  }
-  Job *j = &jobs[job_num - 1];
-
-  j->state = JOB_RUNNING;
-  printf("%s\n", j->cmd);
-
-  if (foreground) {
-    tcsetpgrp(shell_terminal, j->pgid);
-  }
-
-  kill(-j->pgid, SIGCONT);
-
-  if (foreground) {
-    wait_for_job(job_num);
-  }
-}
-
-internal void builtin_jobs(void) {
-  for (int i = 0; i < MAX_JOBS; i++) {
-    if (jobs[i].valid) {
-      print_job(i + 1);
-    }
-  }
-}
 
 // Signal handler for SIGINT - just prints a newline for clean prompt
 internal void sigint_handler(int sig) {
@@ -177,52 +67,6 @@ struct PipedShellCommandList {
 typedef struct {
   int fds[2];
 } Pipe;
-
-internal void builtin_fg(Arena *a, ShellCommand *shell_cmd) {
-  int job_num = -1;
-  if (shell_cmd->args.node_count == 1) {
-    // Find most recent job
-    for (int i = MAX_JOBS - 1; i >= 0; i--) {
-      if (jobs[i].valid) {
-        job_num = i + 1;
-        break;
-      }
-    }
-  } else {
-    String arg = shell_cmd->args.first->next->string;
-    char *s = to_cstring(a, arg);
-    if (s[0] == '%') s++;
-    job_num = atoi(s);
-  }
-  if (job_num > 0) {
-    continue_job(job_num, true);
-  } else {
-    printf("fg: no current job\n");
-  }
-}
-
-internal void builtin_bg(Arena *a, ShellCommand *shell_cmd) {
-  int job_num = -1;
-  if (shell_cmd->args.node_count == 1) {
-    // Find most recent stopped job
-    for (int i = MAX_JOBS - 1; i >= 0; i--) {
-      if (jobs[i].valid && jobs[i].state == JOB_STOPPED) {
-        job_num = i + 1;
-        break;
-      }
-    }
-  } else {
-    String arg = shell_cmd->args.first->next->string;
-    char *s = to_cstring(a, arg);
-    if (s[0] == '%') s++;
-    job_num = atoi(s);
-  }
-  if (job_num > 0) {
-    continue_job(job_num, false);
-  } else {
-    printf("bg: no current job\n");
-  }
-}
 
 internal PipedShellCommandNode *piped_cmd_list_push(Arena *a,
                                                     PipedShellCommandList *list,
@@ -330,7 +174,7 @@ internal void cmd_to_execvp_args(Arena *a, ShellCommand *shell_cmd,
 }
 
 internal void run_exec(Arena *a, ShellCommand *shell_cmd,
-                       StringList *env_path_list, const char *cmd_str) {
+                       StringList *env_path_list) {
   assert(shell_cmd->exe.size > 0);
 
   String exe = shell_cmd->exe;
@@ -352,34 +196,13 @@ internal void run_exec(Arena *a, ShellCommand *shell_cmd,
 
   // child process
   if (pid == 0) {
-    // Put child in its own process group
-    setpgid(0, 0);
-    // Give terminal control to the child
-    tcsetpgrp(shell_terminal, getpid());
-
     signal(SIGINT, SIG_DFL);
     signal(SIGTSTP, SIG_DFL);
     execvp(args[0], args);
     perror("execvp");
     _exit(127);
   } else {
-    // Parent: put child in its own process group
-    setpgid(pid, pid);
-    // Give terminal control to the child
-    tcsetpgrp(shell_terminal, pid);
-
-    int status;
-    waitpid(pid, &status, WUNTRACED);
-
-    // Take back terminal control
-    tcsetpgrp(shell_terminal, shell_pgid);
-
-    if (WIFSTOPPED(status)) {
-      int job_num = add_job(pid, cmd_str);
-      if (job_num > 0) {
-        printf("\n[%d] Stopped\t\t%s\n", job_num, cmd_str);
-      }
-    }
+    waitpid(pid, NULL, 0);
   }
 }
 
@@ -734,17 +557,11 @@ internal void run_builtin(Arena *arena, ShellCommand *shell_cmd,
     cd(arena, shell_cmd);
   } else if (str_equal_cstr(shell_cmd->exe, "history")) {
     history(arena, shell_cmd);
-  } else if (str_equal_cstr(shell_cmd->exe, "jobs")) {
-    builtin_jobs();
-  } else if (str_equal_cstr(shell_cmd->exe, "fg")) {
-    builtin_fg(arena, shell_cmd);
-  } else if (str_equal_cstr(shell_cmd->exe, "bg")) {
-    builtin_bg(arena, shell_cmd);
   }
 }
 
 internal void run_shell_command(Arena *arena, ShellCommand *shell_cmd,
-                                StringList *env_path_list, const char *cmd_str) {
+                                StringList *env_path_list) {
 
   if (str_equal_cstr(shell_cmd->exe, "exit")) {
     shell_running = false;
@@ -765,7 +582,7 @@ internal void run_shell_command(Arena *arena, ShellCommand *shell_cmd,
   if (is_builtin(shell_cmd->exe)) {
     run_builtin(arena, shell_cmd, env_path_list);
   } else if (shell_cmd->exe.size > 0) {
-    run_exec(arena, shell_cmd, env_path_list, cmd_str);
+    run_exec(arena, shell_cmd, env_path_list);
   }
 
   if (saved_source_fd > 0) {
@@ -776,15 +593,14 @@ internal void run_shell_command(Arena *arena, ShellCommand *shell_cmd,
 
 internal void run_piped_shell_command(Arena *a,
                                       PipedShellCommandList *piped_cmd_list,
-                                      StringList *env_path_list,
-                                      const char *cmd_str) {
+                                      StringList *env_path_list) {
   if (piped_cmd_list->node_count == 0) {
     return;
   }
 
   // no pipe
   if (piped_cmd_list->node_count == 1) {
-    run_shell_command(a, &piped_cmd_list->first->cmd, env_path_list, cmd_str);
+    run_shell_command(a, &piped_cmd_list->first->cmd, env_path_list);
     return;
   }
 
@@ -873,16 +689,9 @@ int main(int argc, char *argv[]) {
   // Flush after every printf
   setbuf(stdout, NULL);
 
-  // Setup job control
-  shell_terminal = STDIN_FILENO;
-  shell_pgid = getpid();
-  setpgid(shell_pgid, shell_pgid);
-  tcsetpgrp(shell_terminal, shell_pgid);
-
   // Setup signal handling - shell ignores SIGINT/SIGTSTP at prompt
   signal(SIGINT, sigint_handler);
   signal(SIGTSTP, SIG_IGN);
-  signal(SIGTTOU, SIG_IGN);
 
   uint8_t *arena_backing_buffer = (uint8_t *)malloc(4 * MB);
   Arena arena = {0};
@@ -913,7 +722,7 @@ int main(int argc, char *argv[]) {
     add_history(cmd);
 
     PipedShellCommandList piped_shell_cmd = parse_command(&arena, cmd);
-    run_piped_shell_command(&arena, &piped_shell_cmd, &env_path_list, cmd);
+    run_piped_shell_command(&arena, &piped_shell_cmd, &env_path_list);
 
     free(cmd);
     temp_arena_memory_end(temp);
