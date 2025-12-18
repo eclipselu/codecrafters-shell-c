@@ -599,7 +599,7 @@ internal void run_piped_shell_command(Arena *a,
   int n_cmds = piped_cmd_list->node_count;
   pid_t *pids = (pid_t *)arena_alloc(a, sizeof(pid_t) * n_cmds);
   Pipe *pipes = (Pipe *)arena_alloc(a, sizeof(Pipe) * (n_cmds - 1));
-  for (int i = 0; i < n_cmds; i += 1) {
+  for (int i = 0; i < n_cmds - 1; i += 1) {
     pipe(pipes[i].fds);
   }
 
