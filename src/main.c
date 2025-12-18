@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <readline/history.h>
 #include <readline/readline.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -27,6 +28,14 @@ global const char *builtin_commands[] = {"type", "echo",    "exit", "pwd",
 // history
 global int last_append_cmd_idx = -1;
 global bool shell_running = true;
+
+// Signal handler for SIGINT - just prints a newline for clean prompt
+internal void sigint_handler(int sig) {
+  (void)sig;
+  printf("\n");
+  rl_on_new_line();
+  rl_redisplay();
+}
 
 typedef struct RedirectInfo RedirectInfo;
 struct RedirectInfo {
@@ -187,6 +196,8 @@ internal void run_exec(Arena *a, ShellCommand *shell_cmd,
 
   // child process
   if (pid == 0) {
+    signal(SIGINT, SIG_DFL);
+    signal(SIGTSTP, SIG_DFL);
     execvp(args[0], args);
     perror("execvp");
     _exit(127);
@@ -632,6 +643,8 @@ internal void run_piped_shell_command(Arena *a,
       return;
     }
     if (pids[cmd_idx] == 0) {
+      signal(SIGINT, SIG_DFL);
+      signal(SIGTSTP, SIG_DFL);
       if (cmd_idx == 0) {
         dup2(pipes[0].fds[1], STDOUT_FILENO);
       } else if (cmd_idx == n_cmds - 1) {
@@ -675,6 +688,10 @@ internal void run_piped_shell_command(Arena *a,
 int main(int argc, char *argv[]) {
   // Flush after every printf
   setbuf(stdout, NULL);
+
+  // Setup signal handling - shell ignores SIGINT/SIGTSTP at prompt
+  signal(SIGINT, sigint_handler);
+  signal(SIGTSTP, SIG_IGN);
 
   uint8_t *arena_backing_buffer = (uint8_t *)malloc(4 * MB);
   Arena arena = {0};
