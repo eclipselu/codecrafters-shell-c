@@ -44,3 +44,11 @@ Requires the `readline` library (linked via CMakeLists.txt).
 git commit -am "message"
 git push origin master
 ```
+
+## TODO: Code Quality Improvements
+
+1. **Exit code propagation** - `exit 0` or `exit 1` from the user isn't honored; shell always returns 0. Child process exit codes aren't tracked either.
+
+2. **Input redirection** - Only output redirection (`>`, `>>`, `2>`) is implemented. Need to add `<` for stdin redirection.
+
+3. **SIGTSTP handling** - Ctrl-Z is ignored. Full job control (fg, bg, jobs, process groups) would be needed to properly support suspending processes.
