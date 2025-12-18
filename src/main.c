@@ -47,7 +47,7 @@ struct RedirectInfo {
 typedef struct ShellCommand ShellCommand;
 struct ShellCommand {
   String exe;
-  StringList args;
+  StringArray args;
   RedirectInfo redir_info;
 };
 
@@ -88,15 +88,12 @@ internal PipedShellCommandNode *piped_cmd_list_push(Arena *a,
 }
 
 internal void echo(ShellCommand *cmd) {
-  assert(cmd->args.total_size > 0);
-  assert(cmd->args.first != NULL);
+  assert(cmd->args.count > 0);
 
-  StringNode *arg = cmd->args.first->next;
-  while (arg != NULL) {
-    str_print(arg->string);
-    char split = arg->next == NULL ? '\n' : ' ';
+  for (uint64_t i = 1; i < cmd->args.count; i++) {
+    str_print(cmd->args.items[i]);
+    char split = (i == cmd->args.count - 1) ? '\n' : ' ';
     putchar(split);
-    arg = arg->next;
   }
 }
 
@@ -141,9 +138,9 @@ internal String search_path(Arena *a, String cmd, StringList *env_path_list) {
 
 internal void type(Arena *a, ShellCommand *shell_cmd,
                    StringList *env_path_list) {
-  assert(shell_cmd->args.node_count == 2);
+  assert(shell_cmd->args.count == 2);
 
-  String exe = shell_cmd->args.first->next->string;
+  String exe = shell_cmd->args.items[1];
   if (is_builtin(exe)) {
     // TODO: improve printing for String
     str_print(exe);
@@ -161,16 +158,16 @@ internal void type(Arena *a, ShellCommand *shell_cmd,
 
 internal void cmd_to_execvp_args(Arena *a, ShellCommand *shell_cmd,
                                  char ***execvp_args) {
-  *execvp_args = (char **)arena_alloc(a, sizeof(char *) *
-                                             (shell_cmd->args.node_count + 1));
-  StringNode *ptr = shell_cmd->args.first;
-  for (int index = 0; ptr != NULL; ptr = ptr->next, index += 1) {
-    char *buf = (char *)arena_alloc(a, ptr->string.size + 1);
-    memcpy(buf, ptr->string.str, ptr->string.size);
-    buf[ptr->string.size] = '\0';
-    (*execvp_args)[index] = buf;
+  *execvp_args =
+      (char **)arena_alloc(a, sizeof(char *) * (shell_cmd->args.count + 1));
+  for (uint64_t i = 0; i < shell_cmd->args.count; i += 1) {
+    String s = shell_cmd->args.items[i];
+    char *buf = (char *)arena_alloc(a, s.size + 1);
+    memcpy(buf, s.str, s.size);
+    buf[s.size] = '\0';
+    (*execvp_args)[i] = buf;
   }
-  (*execvp_args)[shell_cmd->args.node_count] = NULL;
+  (*execvp_args)[shell_cmd->args.count] = NULL;
 }
 
 internal void run_exec(Arena *a, ShellCommand *shell_cmd,
@@ -207,7 +204,7 @@ internal void run_exec(Arena *a, ShellCommand *shell_cmd,
 }
 
 internal void pwd(Arena *a, ShellCommand *shell_cmd) {
-  assert(shell_cmd->args.node_count == 1);
+  assert(shell_cmd->args.count == 1);
 
   char *buf = (char *)arena_alloc(a, PATH_MAX_LEN);
   getcwd(buf, PATH_MAX_LEN);
@@ -223,12 +220,12 @@ internal bool is_directory(const char *path) {
 }
 
 internal void cd(Arena *a, ShellCommand *shell_cmd) {
-  assert(shell_cmd->args.node_count == 2);
+  assert(shell_cmd->args.count == 2);
 
   char *env_home = getenv("HOME");
 
   TempArenaMemory temp = temp_arena_memory_begin(a);
-  String dir = shell_cmd->args.first->next->string;
+  String dir = shell_cmd->args.items[1];
   char *buf = (char *)arena_alloc(a, PATH_MAX_LEN);
   memcpy(buf, dir.str, dir.size);
   buf[dir.size] = '\0';
@@ -400,7 +397,7 @@ internal PipedShellCommandList parse_command(Arena *a, char *cmd_str) {
   StringNode *token_ptr = tokens.first;
 
   while (token_ptr != NULL) {
-    StringList args = {0};
+    StringArray args = {0};
     RedirectInfo redirect_info = {0};
     String exe = token_ptr->string;
 
@@ -415,7 +412,7 @@ internal PipedShellCommandList parse_command(Arena *a, char *cmd_str) {
         redirect_info = info;
       } else {
         if (redirect_info.source_fd <= 0) {
-          str_list_push(a, &args, token_ptr->string);
+          str_array_push(a, &args, token_ptr->string);
         }
       }
     }
@@ -516,24 +513,24 @@ internal void append_history_file(const char *histfile) {
 }
 
 internal void history(Arena *a, ShellCommand *shell_cmd) {
-  int argc = shell_cmd->args.node_count;
+  uint64_t argc = shell_cmd->args.count;
   assert(argc > 0);
 
   if (argc == 1) {
     print_history(a, history_length);
   } else if (argc == 2) {
-    if (str_is_posnum(shell_cmd->args.last->string)) {
+    String last_arg = shell_cmd->args.items[argc - 1];
+    if (str_is_posnum(last_arg)) {
       int n = history_length;
-      String s = shell_cmd->args.last->string;
-      n = atoi(to_cstring(a, s));
+      n = atoi(to_cstring(a, last_arg));
       if (n > history_length) {
         n = history_length;
       }
       print_history(a, n);
     }
   } else if (argc == 3) {
-    String flag = shell_cmd->args.first->next->string;
-    String histfile = shell_cmd->args.last->string;
+    String flag = shell_cmd->args.items[1];
+    String histfile = shell_cmd->args.items[2];
     if (str_equal_cstr(flag, "-r")) {
       read_history(to_cstring(a, histfile));
     } else if (str_equal_cstr(flag, "-w")) {

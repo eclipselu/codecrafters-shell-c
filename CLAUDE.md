@@ -24,7 +24,7 @@ Requires the `readline` library (linked via CMakeLists.txt).
 
 **Memory Management**: Uses a custom arena allocator (`arena.h`) with temporary memory scopes via `TempArenaMemory` for per-command allocations that reset after each command execution.
 
-**String Handling**: Custom `String` type (pointer + size, not null-terminated) with linked list `StringList` for tokenized command arguments. See `base_string.h` for operations like `str_equal_cstr`, `str_split`, `str_concat`.
+**String Handling**: Custom `String` type (pointer + size, not null-terminated). Uses `StringArray` (dynamic array) for command arguments and `StringList` (linked list) for sequential-only usages like tokenization. See `base_string.h` for operations like `str_equal_cstr`, `str_split`, `str_concat`, `str_array_push`.
 
 **Code Style Conventions** (from `base.h`):
 - `global` = file-scoped static

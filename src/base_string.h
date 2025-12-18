@@ -28,6 +28,26 @@ struct StringList {
   uint64_t total_size;
 };
 
+typedef struct StringArray StringArray;
+struct StringArray {
+  String *items;
+  uint64_t count;
+  uint64_t capacity;
+};
+
+internal void str_array_push(Arena *a, StringArray *arr, String str) {
+  if (arr->count >= arr->capacity) {
+    uint64_t new_cap = arr->capacity == 0 ? 8 : arr->capacity * 2;
+    String *new_items = (String *)arena_alloc(a, sizeof(String) * new_cap);
+    if (arr->items) {
+      memcpy(new_items, arr->items, sizeof(String) * arr->count);
+    }
+    arr->items = new_items;
+    arr->capacity = new_cap;
+  }
+  arr->items[arr->count++] = str;
+}
+
 internal String str_init(const char *str, uint64_t size) {
   String result = {.str = (uint8_t *)str, .size = size};
   return result;
