@@ -1,0 +1,11 @@
+[
+  {
+    "file": "src/main.c",
+    "arguments": [
+      "clang",
+      "src/main.c",
+      "-I/home/linuxbrew/.linuxbrew/include"
+    ],
+    "directory": "/var/home/danglu/Documents/codecrafters-shell-c"
+  }
+]

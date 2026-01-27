@@ -1,8 +1,6 @@
 #include <assert.h>
 #include <dirent.h>
 #include <fcntl.h>
-#include <readline/history.h>
-#include <readline/readline.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -19,6 +17,8 @@
 #include "arena.h"
 #include "base.h"
 #include "base_string.h"
+
+#include "readline_compat.h"
 
 // include builtin and executables in PATH
 global StringList existing_commands = {0};
