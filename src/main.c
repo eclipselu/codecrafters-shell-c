@@ -490,6 +490,8 @@ internal char *cmd_generator(const char *text, int state) {
 internal char **cmd_completion(const char *text, int start, int end) {
   if (start == 0) {
     return rl_completion_matches(text, cmd_generator);
+  } else {
+    return rl_completion_matches(text, rl_filename_completion_function);
   }
   return NULL;
 }
