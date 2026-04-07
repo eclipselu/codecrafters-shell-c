@@ -23,7 +23,7 @@
 // include builtin and executables in PATH
 global StringList existing_commands = {0};
 global const char *builtin_commands[] = {"type", "echo",    "exit", "pwd",
-                                         "cd",   "history", NULL};
+                                         "cd",   "history", "jobs", NULL};
 
 // history
 global int last_append_cmd_idx = -1;
@@ -544,6 +544,8 @@ internal void history(Arena *a, ShellCommand *shell_cmd) {
   }
 }
 
+internal void jobs(Arena *a, ShellCommand *shell_cmd) {}
+
 internal void run_builtin(Arena *arena, ShellCommand *shell_cmd,
                           StringList *env_path_list) {
   if (str_equal_cstr(shell_cmd->exe, "echo")) {
@@ -556,6 +558,8 @@ internal void run_builtin(Arena *arena, ShellCommand *shell_cmd,
     cd(arena, shell_cmd);
   } else if (str_equal_cstr(shell_cmd->exe, "history")) {
     history(arena, shell_cmd);
+  } else if (str_equal_cstr(shell_cmd->exe, "jobs")) {
+    jobs(arena, shell_cmd);
   }
 }
 
